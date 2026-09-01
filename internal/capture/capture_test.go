@@ -97,9 +97,95 @@ func TestRecorderFilesReturnsCopy(t *testing.T) {
 	}
 }
 
+// TestMimeSurvivesBodyEviction proves the fix for the eviction bug: when a
+// generated image's body could not be read from the CDP buffer (which is
+// exactly when FetchInPage's fallback is needed), the mime recorded from the
+// ResponseReceived event must still be retrievable via Mime(), not silently
+// replaced by the "image/png" last-resort default. It drives the Recorder's
+// maps directly under the mutex, deliberately leaving files[id] unset to
+// stand in for "body fetch failed" — no browser involved.
+//
+// Before the fix, Recorder had no urls field at all, so this test failed to
+// compile (undefined: r.urls). See task-10-report.md, "Fix round 1" section,
+// for the exact pre-fix output.
+func TestMimeSurvivesBodyEviction(t *testing.T) {
+	r := NewRecorder(nil)
+	r.mu.Lock()
+	r.urls["file_abc"] = "https://chatgpt.com/backend-api/estuary/content?id=file_abc"
+	r.mimes["file_abc"] = "image/webp"
+	// Deliberately no r.files["file_abc"]: this is the buffer-eviction case
+	// where metadata is known but bytes are not.
+	r.mu.Unlock()
+
+	if got := r.Mime("file_abc"); got != "image/webp" {
+		t.Fatalf("Mime(id) = %q, want %q — a recorded mime must survive a body-fetch failure, not fall back to the image/png default", got, "image/webp")
+	}
+}
+
+// TestURLAccessor exercises URL() the same way TestRecorderFilesReturnsCopy
+// exercises Files(): seed the map directly under the mutex, no browser.
+func TestURLAccessor(t *testing.T) {
+	r := NewRecorder(nil)
+	r.mu.Lock()
+	r.urls["file_abc"] = "https://chatgpt.com/backend-api/estuary/content?id=file_abc"
+	r.mu.Unlock()
+
+	if got := r.URL("file_abc"); got != "https://chatgpt.com/backend-api/estuary/content?id=file_abc" {
+		t.Fatalf("URL(known) = %q", got)
+	}
+	if got := r.URL("file_unknown"); got != "" {
+		t.Fatalf("URL(unknown) = %q, want empty string", got)
+	}
+}
+
+// TestIDsIncludesEvictedEntries proves IDs() surfaces an id the recorder has
+// seen (url+mime known) even though its body never arrived, and that the
+// returned slice is a copy: mutating it must not affect a later call.
+func TestIDsIncludesEvictedEntries(t *testing.T) {
+	r := NewRecorder(nil)
+	r.mu.Lock()
+	r.urls["file_abc"] = "https://chatgpt.com/backend-api/estuary/content?id=file_abc"
+	r.mimes["file_abc"] = "image/webp"
+	// No bytes recorded: file_abc was seen but evicted, same as above.
+	r.mu.Unlock()
+
+	ids := r.IDs()
+	if len(ids) != 1 || ids[0] != "file_abc" {
+		t.Fatalf("IDs() = %v, want [file_abc]", ids)
+	}
+
+	// Mutate the returned slice; the Recorder's internal state must be
+	// unaffected on a second call.
+	ids[0] = "tampered"
+	ids = append(ids, "injected")
+
+	again := r.IDs()
+	if len(again) != 1 || again[0] != "file_abc" {
+		t.Fatalf("IDs() leaked the live slice: got %v after external mutation, want [file_abc]", again)
+	}
+}
+
+// TestFilesExcludesBytelessEntries proves Files() still only reports ids
+// with actual bytes: an id known only from url+mime (the eviction case)
+// must not show up there, or a caller would think it had image data it
+// does not.
+func TestFilesExcludesBytelessEntries(t *testing.T) {
+	r := NewRecorder(nil)
+	r.mu.Lock()
+	r.urls["file_abc"] = "https://chatgpt.com/backend-api/estuary/content?id=file_abc"
+	r.mimes["file_abc"] = "image/webp"
+	r.mu.Unlock()
+
+	files := r.Files()
+	if _, ok := files["file_abc"]; ok {
+		t.Fatalf("Files() must not include an id with no recorded bytes, got %v", files)
+	}
+}
+
 // TestRecorderConcurrentAccess drives the same lock-protected fields Start's
-// event goroutine would, concurrently with reads through Files/Mime, so
-// `go test -race` can catch a missing lock. It also asserts every concurrent
+// event goroutine would — files, mimes, and urls together — concurrently
+// with reads through Files/Mime/URL/IDs, so `go test -race` can catch a
+// missing lock anywhere across all four. It also asserts every concurrent
 // write was observed, which would fail if the mutex ever dropped an update.
 func TestRecorderConcurrentAccess(t *testing.T) {
 	r := NewRecorder(nil)
@@ -110,9 +196,11 @@ func TestRecorderConcurrentAccess(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			id := fmt.Sprintf("file_%d", i)
+			url := fmt.Sprintf("https://chatgpt.com/backend-api/estuary/content?id=%s", id)
 			r.mu.Lock()
-			r.files[id] = []byte{byte(i)}
+			r.urls[id] = url
 			r.mimes[id] = "image/png"
+			r.files[id] = []byte{byte(i)}
 			r.mu.Unlock()
 		}(i)
 	}
@@ -122,6 +210,8 @@ func TestRecorderConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			_ = r.Files()
 			_ = r.Mime("file_0")
+			_ = r.URL("file_0")
+			_ = r.IDs()
 		}()
 	}
 	wg.Wait()
@@ -129,5 +219,9 @@ func TestRecorderConcurrentAccess(t *testing.T) {
 	files := r.Files()
 	if len(files) != n {
 		t.Fatalf("got %d files after concurrent writes, want %d", len(files), n)
+	}
+	ids := r.IDs()
+	if len(ids) != n {
+		t.Fatalf("got %d ids after concurrent writes, want %d", len(ids), n)
 	}
 }

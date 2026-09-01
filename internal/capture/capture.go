@@ -55,6 +55,7 @@ type Recorder struct {
 	wip   map[proto.NetworkRequestID]entry
 	files map[string][]byte
 	mimes map[string]string
+	urls  map[string]string
 }
 
 func NewRecorder(p *rod.Page) *Recorder {
@@ -63,6 +64,7 @@ func NewRecorder(p *rod.Page) *Recorder {
 		wip:   map[proto.NetworkRequestID]entry{},
 		files: map[string][]byte{},
 		mimes: map[string]string{},
+		urls:  map[string]string{},
 	}
 }
 
@@ -86,6 +88,19 @@ func (r *Recorder) Start() {
 			if !ok {
 				return
 			}
+			id := FileIDFromURL(ent.url)
+			if id == "" {
+				return
+			}
+			// Record url+mime regardless of whether the body fetch below
+			// succeeds. A GetResponseBody failure is exactly the buffer-
+			// eviction case FetchInPage exists to recover from, so this
+			// metadata must survive that failure rather than being
+			// discarded along with it.
+			r.mu.Lock()
+			r.urls[id] = ent.url
+			r.mimes[id] = ent.mime
+			r.mu.Unlock()
 			res, err := proto.NetworkGetResponseBody{RequestID: e.RequestID}.Call(r.page)
 			if err != nil {
 				return // buffer evicted; FetchInPage is the fallback
@@ -94,10 +109,8 @@ func (r *Recorder) Start() {
 			if err != nil {
 				return
 			}
-			id := FileIDFromURL(ent.url)
 			r.mu.Lock()
 			r.files[id] = data
-			r.mimes[id] = ent.mime
 			r.mu.Unlock()
 		},
 	)()
@@ -113,6 +126,10 @@ func (r *Recorder) Files() map[string][]byte {
 	return out
 }
 
+// Mime returns the MIME type recorded for an id. "image/png" is a
+// last-resort default only for an id the recorder never saw at all — an id
+// whose response body was evicted from the CDP buffer still has its real
+// mime recorded here, taken from the ResponseReceived event.
 func (r *Recorder) Mime(id string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -120,6 +137,27 @@ func (r *Recorder) Mime(id string) string {
 		return m
 	}
 	return "image/png"
+}
+
+// URL returns the source URL recorded for an id, or "" if unknown. It is
+// populated even when the response body could not be read, so a caller can
+// re-fetch an evicted image via FetchInPage.
+func (r *Recorder) URL(id string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.urls[id]
+}
+
+// IDs returns the ids the recorder has seen, including ones whose response
+// body was evicted and so never made it into Files(). Returns a copy.
+func (r *Recorder) IDs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, 0, len(r.urls))
+	for id := range r.urls {
+		out = append(out, id)
+	}
+	return out
 }
 
 // FetchInPage is the fallback when the CDP response buffer has been evicted,
