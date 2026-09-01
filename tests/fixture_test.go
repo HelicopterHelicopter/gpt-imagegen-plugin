@@ -116,6 +116,37 @@ func TestSelectorsResolveAgainstFixture(t *testing.T) {
 	}
 }
 
+// TestSelectAllJSOnContenteditableComposer proves compose.SelectAllJS -- the
+// script Send runs to clear leftover composer text before Input -- actually
+// works against the composer's real DOM shape: a contenteditable <div>
+// (#prompt-textarea), not an <input>/<textarea>. This is a regression test
+// for a bug where Send used go-rod's Element.SelectAllText(), which calls
+// the DOM `.select()` method; contenteditable elements have no such method,
+// so every real run threw a TypeError before ever reaching Input. Reverting
+// this file's call to el.SelectAllText() reproduces that failure here,
+// offline, which is what makes this the right place to catch it.
+func TestSelectAllJSOnContenteditableComposer(t *testing.T) {
+	p, done := fixturePage(t, "conversation.html")
+	defer done()
+
+	set, err := selectors.Load("")
+	if err != nil {
+		t.Fatalf("load selectors: %v", err)
+	}
+	el, err := compose.Resolve(p, set, "composer_input", 5*time.Second)
+	if err != nil {
+		t.Fatalf("resolve composer_input: %v", err)
+	}
+
+	res, err := el.Eval(compose.SelectAllJS)
+	if err != nil {
+		t.Fatalf("SelectAllJS threw against the fixture's contenteditable composer: %v", err)
+	}
+	if !res.Value.Bool() {
+		t.Fatal("SelectAllJS returned false; expected it to select the contenteditable composer's contents")
+	}
+}
+
 // TestCompletionSelectorsResolveAgainstGeneratingFixture covers the other
 // half of the key set: the two selectors that only exist while a generation
 // is in flight. These are what stop the tool declaring a run finished before

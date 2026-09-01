@@ -3,6 +3,7 @@ package compose
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -142,6 +143,54 @@ func waitAttachmentsReady(p *rod.Page, s selectors.Set, want int, timeout time.D
 	}
 }
 
+// SelectAllJS selects the full contents of the element it is evaluated
+// against ("this"). ChatGPT's composer resolves to a contenteditable <div>
+// (#prompt-textarea), not an <input>/<textarea>, so it has no DOM `.select()`
+// method -- go-rod's Element.SelectAllText() calls exactly that and throws a
+// TypeError on every run against the real page. This JS branches on which
+// shape the element actually is: a form field selects the normal way, a
+// contenteditable is selected via a Range/Selection, and anything else is
+// reported back as false rather than throwing.
+//
+// Exported (rather than a package-local const) so the offline fixture test
+// in tests/fixture_test.go can eval the exact same script go-rod runs in
+// production against a real contenteditable composer -- that is what would
+// have caught the original SelectAllText() bug.
+const SelectAllJS = `() => {
+	if (typeof this.select === 'function') { this.select(); return true; }
+	if (this.isContentEditable) {
+		const r = document.createRange();
+		r.selectNodeContents(this);
+		const s = window.getSelection();
+		s.removeAllRanges();
+		s.addRange(r);
+		return true;
+	}
+	return false;
+}`
+
+// clearComposer selects any existing composer text so the following Input
+// call (CDP InsertText, which inserts at the cursor rather than replacing
+// the field) replaces it instead of appending after it. This is purely
+// defensive: Send is always called right after NewChat, so the composer is
+// normally already empty, and the only case this guards against is a retry
+// against a composer that skipped NewChat. Because it is defensive rather
+// than load-bearing, a failure here must never fail the run -- it is logged
+// to stderr and Send proceeds straight to Input. Returning an error instead
+// would mean a harmless clear failure (or, as happened here, a fixable bug
+// in the clear JS itself) breaks 100% of generate/edit runs instead of, at
+// worst, occasionally concatenating onto leftover text in a rare edge case.
+func clearComposer(el *rod.Element) {
+	res, err := el.Eval(SelectAllJS)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gpt-imagegen: clear composer text failed, continuing anyway: %v\n", err)
+		return
+	}
+	if !res.Value.Bool() {
+		fmt.Fprintln(os.Stderr, "gpt-imagegen: clear composer text: element was neither a form field nor contenteditable, continuing anyway")
+	}
+}
+
 // Send types the prompt, attaches any reference files, and submits.
 func Send(p *rod.Page, s selectors.Set, prompt string, refs []string) error {
 	if len(refs) > 0 {
@@ -163,11 +212,7 @@ func Send(p *rod.Page, s selectors.Set, prompt string, refs []string) error {
 	if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
 		return err
 	}
-	// Clear any leftover text (e.g. a retry against a composer that skipped
-	// NewChat) so the prompt replaces it instead of Input appending after it.
-	if err := el.SelectAllText(); err != nil {
-		return err
-	}
+	clearComposer(el)
 	if err := el.Input(prompt); err != nil {
 		return err
 	}
