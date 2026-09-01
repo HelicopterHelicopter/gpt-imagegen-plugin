@@ -1,8 +1,11 @@
 package session
 
 import (
+	"bufio"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -85,16 +88,75 @@ func TestLockReleaseSafeAndNilSafe(t *testing.T) {
 	}
 }
 
-func TestDeadProcessLockIsReclaimable(t *testing.T) {
-	// Cross-process flock testing requires spawning a child that acquires and holds
-	// a lock via syscall.Flock, then verifying parent cannot acquire it, then killing
-	// the child and verifying parent can. Shell-based `flock` command behavior is
-	// unreliable across macOS versions and shell implementations, and wrapping it
-	// in a test makes the test fragile and platform-dependent.
-	//
-	// The kernel flock mechanism is well-tested by the OS; our implementation's
-	// correctness is verified by: (a) single-process tests that confirm LOCK_NB
-	// returns EWOULDBLOCK when held, (b) release properly unlocks, and (c) nil-safety.
-	// A real cross-process test belongs in a platform-specific integration suite, not here.
-	t.Skipf("cross-process flock testing deferred to integration suite")
+func TestLockReleasedWhenHolderProcessDies(t *testing.T) {
+	// Helper mode: run as child holding the lock.
+	if os.Getenv("GPT_IMAGEGEN_LOCK_HELPER") == "1" {
+		path := os.Getenv("GPT_IMAGEGEN_LOCK_PATH")
+		l, err := AcquireLock(path, 5*time.Second)
+		if err != nil {
+			fmt.Println("HELPER_ERR", err)
+			os.Exit(1)
+		}
+		_ = l
+		fmt.Println("HELPER_HELD")
+		os.Stdout.Sync()
+		time.Sleep(120 * time.Second)
+		os.Exit(0)
+	}
+
+	path := filepath.Join(t.TempDir(), "lock")
+	cmd := exec.Command(os.Args[0], "-test.run", "TestLockReleasedWhenHolderProcessDies")
+	cmd.Env = append(os.Environ(), "GPT_IMAGEGEN_LOCK_HELPER=1", "GPT_IMAGEGEN_LOCK_PATH="+path)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
+
+	// Wait for HELPER_HELD on stdout with timeout.
+	helperReady := make(chan bool, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "HELPER_HELD" {
+				helperReady <- true
+				return
+			}
+			if line == "HELPER_ERR" {
+				helperReady <- false
+				return
+			}
+		}
+		helperReady <- false
+	}()
+
+	select {
+	case ready := <-helperReady:
+		if !ready {
+			t.Fatal("helper failed to acquire lock")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("helper did not signal readiness")
+	}
+
+	// 1. While child holds lock, parent must get ErrLocked.
+	if _, err := AcquireLock(path, 500*time.Millisecond); !errors.Is(err, ErrLocked) {
+		t.Fatalf("expected ErrLocked while helper holds it, got %v", err)
+	}
+
+	// 2. Kill child WITHOUT cleanup, then parent must acquire.
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = cmd.Process.Wait()
+
+	l, err := AcquireLock(path, 5*time.Second)
+	if err != nil {
+		t.Fatalf("kernel did not release the lock after holder death: %v", err)
+	}
+	_ = l.Release()
 }
