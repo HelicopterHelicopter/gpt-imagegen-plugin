@@ -19,6 +19,13 @@ const (
 	CodeNoImage       Code = "NO_IMAGE_RETURNED"
 	CodeChromeMissing Code = "CHROME_MISSING"
 	CodeRefused       Code = "REFUSED"
+
+	// CodeBinaryMissing is emitted by the plugin's shell shim
+	// (plugins/gpt-imagegen/scripts/gpt-imagegen), never by this binary
+	// itself -- if this binary is running, it obviously exists. It is
+	// declared here so the code is part of the one JSON error contract the
+	// skill parses, even though no Go code path constructs it.
+	CodeBinaryMissing Code = "BINARY_MISSING"
 )
 
 type Image struct {

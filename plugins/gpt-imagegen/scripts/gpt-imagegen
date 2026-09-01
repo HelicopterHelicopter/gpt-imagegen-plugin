@@ -1,10 +1,26 @@
 #!/usr/bin/env bash
-# Locate the plugin binary regardless of where the plugin is installed.
+# Locate the plugin binary and exec it. Resolution order:
+#   1. $GPT_IMAGEGEN_BIN, if set and executable.
+#   2. The local build at ../bin/gpt-imagegen (produced by `make build`).
+#   3. ~/.gpt-imagegen/bin/gpt-imagegen (a downloaded release binary, or the
+#      copy `make install-local` puts there).
+# This shim never downloads anything itself. If none of the above exists, it
+# emits exactly one line of JSON with code BINARY_MISSING and exits 1.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-bin="$here/../bin/gpt-imagegen"
-if [[ ! -x "$bin" ]]; then
-  echo '{"ok":false,"error":{"code":"CHROME_MISSING","message":"gpt-imagegen binary not built; run make build"}}'
+
+bin=""
+if [[ -n "${GPT_IMAGEGEN_BIN:-}" && -x "${GPT_IMAGEGEN_BIN}" ]]; then
+  bin="$GPT_IMAGEGEN_BIN"
+elif [[ -x "$here/../bin/gpt-imagegen" ]]; then
+  bin="$here/../bin/gpt-imagegen"
+elif [[ -x "$HOME/.gpt-imagegen/bin/gpt-imagegen" ]]; then
+  bin="$HOME/.gpt-imagegen/bin/gpt-imagegen"
+fi
+
+if [[ -z "$bin" ]]; then
+  echo '{"ok":false,"error":{"code":"BINARY_MISSING","message":"gpt-imagegen binary not found. Build it from source with `make build`, or download the release binary for your platform and place it at ~/.gpt-imagegen/bin/gpt-imagegen."}}'
   exit 1
 fi
+
 exec "$bin" "$@"

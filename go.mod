@@ -1,4 +1,4 @@
-module github.com/jheelr/gpt-imagegen
+module github.com/jheel-knot/gpt-imagegen-plugin
 
 go 1.27.0
 

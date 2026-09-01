@@ -11,7 +11,7 @@ import (
 	"github.com/go-rod/rod/lib/input"
 	"github.com/go-rod/rod/lib/proto"
 
-	"github.com/jheelr/gpt-imagegen/internal/selectors"
+	"github.com/jheel-knot/gpt-imagegen-plugin/internal/selectors"
 )
 
 // ErrSelectorMiss is the one error the CLI turns into SELECTOR_MISS, which

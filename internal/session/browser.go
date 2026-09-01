@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -12,17 +14,77 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 )
 
-const defaultChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+// chromeLookPathNames are executable names searched on $PATH, in priority
+// order, when no well-known absolute path exists for the current OS.
+var chromeLookPathNames = []string{
+	"google-chrome",
+	"google-chrome-stable",
+	"chromium",
+	"chromium-browser",
+}
 
+// chromeCandidates returns the well-known absolute paths to a Chrome-family
+// browser for goos, in priority order. It takes goos as a parameter rather
+// than reading runtime.GOOS itself so every platform's list is unit
+// testable from any host.
+func chromeCandidates(goos string) []string {
+	switch goos {
+	case "darwin":
+		return []string{
+			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+			"/Applications/Chromium.app/Contents/MacOS/Chromium",
+			"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+			"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+		}
+	case "linux":
+		return []string{
+			"/usr/bin/google-chrome",
+			"/usr/bin/google-chrome-stable",
+			"/usr/bin/chromium",
+			"/usr/bin/chromium-browser",
+			"/snap/bin/chromium",
+		}
+	default:
+		return nil
+	}
+}
+
+// ChromePath locates a Chrome-family browser binary. Resolution order:
+//
+//  1. $GPT_IMAGEGEN_CHROME, if set. This always wins, even when the path
+//     turns out not to exist, so a broken override is reported as a clear
+//     error rather than silently falling through to something else.
+//  2. A well-known absolute path for the current OS (see chromeCandidates).
+//  3. $PATH, searched for common Chrome-family executable names.
 func ChromePath() (string, error) {
-	p := os.Getenv("GPT_IMAGEGEN_CHROME")
-	if p == "" {
-		p = defaultChrome
+	return resolveChromePath(runtime.GOOS, os.Stat, exec.LookPath)
+}
+
+// resolveChromePath implements ChromePath's resolution order against
+// injectable stat/lookPath functions so the logic is testable without a
+// real Chrome installation anywhere on the test machine.
+func resolveChromePath(goos string, stat func(string) (os.FileInfo, error), lookPath func(string) (string, error)) (string, error) {
+	if p := os.Getenv("GPT_IMAGEGEN_CHROME"); p != "" {
+		if _, err := stat(p); err != nil {
+			return "", fmt.Errorf("GPT_IMAGEGEN_CHROME is set to %q but no file exists there", p)
+		}
+		return p, nil
 	}
-	if _, err := os.Stat(p); err != nil {
-		return "", fmt.Errorf("chrome not found at %s", p)
+	candidates := chromeCandidates(goos)
+	for _, p := range candidates {
+		if _, err := stat(p); err == nil {
+			return p, nil
+		}
 	}
-	return p, nil
+	for _, name := range chromeLookPathNames {
+		if p, err := lookPath(name); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf(
+		"no Chrome-family browser found for %s (checked $GPT_IMAGEGEN_CHROME, %d well-known install path(s), and $PATH for %s); set $GPT_IMAGEGEN_CHROME or install Chrome",
+		goos, len(candidates), strings.Join(chromeLookPathNames, ", "),
+	)
 }
 
 // Browser wraps a rod connection. PID is only ever non-zero for a browser we

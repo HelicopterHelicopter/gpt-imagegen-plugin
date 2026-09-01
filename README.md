@@ -8,19 +8,70 @@ This repo is both a standalone Go CLI (`cmd/gpt-imagegen`) and a Claude Code
 plugin (`plugins/gpt-imagegen`) that wraps that CLI with a launcher shim, an
 auto-triggering skill, and slash commands.
 
+## Requirements
+
+- **Google Chrome**, signed in to ChatGPT (the plugin drives that session
+  directly; it never uses an API key). Chromium, Brave and Edge also work in
+  practice, since `ChromePath` searches for those too, but Chrome is what has
+  actually been tested.
+- Either a **prebuilt release binary** for your platform, or **Go 1.27** to
+  build one yourself. The plugin's shell shim never downloads a binary on its
+  own — you choose one of the two paths below.
+
 ## Installing as a Claude Code plugin
 
-Add this repo as a marketplace and install the `gpt-imagegen` plugin, then
-build the binary once:
+Add this repo as a marketplace and install the plugin:
+
+```
+/plugin marketplace add jheel-knot/gpt-imagegen-plugin
+/plugin install gpt-imagegen@gpt-imagegen
+```
+
+Then provide the `gpt-imagegen` binary itself, by whichever of these two
+paths is more convenient:
+
+- **Build from source** (requires Go 1.27):
+
+  ```bash
+  make build
+  ```
+
+  This builds to `plugins/gpt-imagegen/bin/gpt-imagegen`, which is not
+  committed to git — `make build` (or `make clean` to remove it) is the only
+  way to produce or remove it locally.
+
+- **Download a release binary** for your platform from this repo's Releases
+  page and place it at `~/.gpt-imagegen/bin/gpt-imagegen` (`chmod +x` it).
+  `make install-local` does the equivalent for a binary you built yourself,
+  copying it from `plugins/gpt-imagegen/bin/` to that same location.
+
+The launcher shim (`plugins/gpt-imagegen/scripts/gpt-imagegen`) looks for the
+binary in this order: `$GPT_IMAGEGEN_BIN` if set, then the local build at
+`plugins/gpt-imagegen/bin/`, then `~/.gpt-imagegen/bin/`. If none exist, it
+prints one line of JSON with `error.code: "BINARY_MISSING"` telling you to do
+one of the above — it never fetches anything itself.
+
+Verify the install:
 
 ```bash
-make build
 ./plugins/gpt-imagegen/scripts/gpt-imagegen doctor
 ```
 
-The binary is built to `plugins/gpt-imagegen/bin/gpt-imagegen` and is not
-committed to git; `make build` (or `make clean` to remove it) is the only way
-to produce or remove it locally.
+## Platform support
+
+**macOS is the only platform this plugin has actually been tested on.**
+Linux release binaries are built by CI and Chrome discovery (`ChromePath`)
+does search the usual Linux install locations (`/usr/bin/google-chrome`,
+`/usr/bin/chromium`, `$PATH`, and so on), but the plugin has not been run
+end-to-end against a real ChatGPT session on Linux — treat it as untested,
+not unsupported.
+
+One concrete behavioural difference: hiding the automation window off-screen
+during `generate`/`edit`/`probe` is implemented via AppleScript and is
+macOS-only (`internal/session/window_darwin.go`). On every other platform
+(`internal/session/window_other.go`) that window stays visible while a
+generation runs, since there is no offscreen-positioning implementation for
+it yet.
 
 ## CLI surface
 
@@ -65,6 +116,12 @@ directory. It is best-effort — if the capture fails the field is simply
 absent, and the run still reports the miss.
 
 ## Known limitations
+
+- **Not tested on Linux.** See Platform support above: Linux binaries build
+  and Chrome discovery covers Linux install paths, but nobody has run a real
+  generation against ChatGPT on Linux yet. The offscreen window-hiding used
+  during `generate`/`edit`/`probe` is also macOS-only; on Linux the
+  automation window stays visible for the duration of a run.
 
 - **`RATE_LIMITED` and `CHALLENGE` are declared in the JSON error contract
   but are not emitted by any code path today.** Detection for these two was
@@ -123,8 +180,9 @@ absent, and the run still reports the miss.
 ## Development
 
 ```bash
-make build   # build the binary into plugins/gpt-imagegen/bin/
-make test    # go test ./...
-make smoke   # opt-in live smoke test; costs a real ChatGPT turn (~40s)
-make clean   # remove build output
+make build         # build the binary into plugins/gpt-imagegen/bin/
+make test          # go test ./...
+make smoke         # opt-in live smoke test; costs a real ChatGPT turn (~40s)
+make install-local # copy the built binary to ~/.gpt-imagegen/bin/
+make clean         # remove build output
 ```

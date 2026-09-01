@@ -93,6 +93,7 @@ Branch on `error.code`. Never invent a retry that is not listed here.
 | `NO_IMAGE_RETURNED` or `REFUSED` | Report it. Likely a model refusal, not a bug. |
 | `PROFILE_LOCKED` | Another session holds the browser. Report and stop. |
 | `CHROME_MISSING` | Tell the user to install Chrome or run `make build`. |
+| `BINARY_MISSING` | The `gpt-imagegen` binary itself was not found. Tell the user to either build it from source with `make build`, or download the release binary for their platform and place it at `~/.gpt-imagegen/bin/gpt-imagegen`. Do not retry. |
 
 **Known limitation: `RATE_LIMITED` and `CHALLENGE` are not currently
 detected by any code path.** They are part of the JSON contract (a future

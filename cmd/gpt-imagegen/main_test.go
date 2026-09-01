@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jheelr/gpt-imagegen/internal/session"
+	"github.com/jheel-knot/gpt-imagegen-plugin/internal/session"
 )
 
 func TestUnknownCommandEmitsJSONOnStdout(t *testing.T) {

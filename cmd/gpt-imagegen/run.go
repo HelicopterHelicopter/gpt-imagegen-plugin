@@ -12,12 +12,12 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
 
-	"github.com/jheelr/gpt-imagegen/internal/capture"
-	"github.com/jheelr/gpt-imagegen/internal/compose"
-	"github.com/jheelr/gpt-imagegen/internal/envelope"
-	"github.com/jheelr/gpt-imagegen/internal/probe"
-	"github.com/jheelr/gpt-imagegen/internal/selectors"
-	"github.com/jheelr/gpt-imagegen/internal/session"
+	"github.com/jheel-knot/gpt-imagegen-plugin/internal/capture"
+	"github.com/jheel-knot/gpt-imagegen-plugin/internal/compose"
+	"github.com/jheel-knot/gpt-imagegen-plugin/internal/envelope"
+	"github.com/jheel-knot/gpt-imagegen-plugin/internal/probe"
+	"github.com/jheel-knot/gpt-imagegen-plugin/internal/selectors"
+	"github.com/jheel-knot/gpt-imagegen-plugin/internal/session"
 )
 
 type stringList []string

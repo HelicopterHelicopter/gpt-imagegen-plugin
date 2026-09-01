@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+
+      # tests/fixture_test.go drives a real (headless, offline, file://)
+      # Chrome instance to exercise selectors against saved HTML fixtures.
+      # Without a Chrome binary present, session.ChromePath() errors and
+      # every one of those tests calls t.Skip -- the run still goes green,
+      # it just silently stops proving anything. Installing Chrome here and
+      # pointing GPT_IMAGEGEN_CHROME at it is what keeps CI honest: the
+      # fixture tests actually execute instead of skipping.
+      - name: Set up Chrome
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v2
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Format check
+        run: |
+          fmt_out="$(gofmt -l .)"
+          if [ -n "$fmt_out" ]; then
+            echo "gofmt needs to be run on:"
+            echo "$fmt_out"
+            exit 1
+          fi
+
+      - name: Test
+        env:
+          GPT_IMAGEGEN_CHROME: ${{ steps.setup-chrome.outputs.chrome-path }}
+          # GPT_IMAGEGEN_LIVE is deliberately left UNSET. tests/live/live_test.go
+          # already skips itself unless GPT_IMAGEGEN_LIVE=1 (it drives a real,
+          # signed-in ChatGPT session and costs a real turn against the user's
+          # account), so simply never setting that variable here is enough to
+          # keep the live smoke out of CI -- no special exclusion flag needed.
+          # The fixture tests in tests/ are a different thing: those are
+          # offline and safe to run in CI, which is why Chrome is installed
+          # above.
+        run: go test ./... -count=1

@@ -15,10 +15,10 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 
-	"github.com/jheelr/gpt-imagegen/internal/compose"
-	"github.com/jheelr/gpt-imagegen/internal/probe"
-	"github.com/jheelr/gpt-imagegen/internal/selectors"
-	"github.com/jheelr/gpt-imagegen/internal/session"
+	"github.com/jheel-knot/gpt-imagegen-plugin/internal/compose"
+	"github.com/jheel-knot/gpt-imagegen-plugin/internal/probe"
+	"github.com/jheel-knot/gpt-imagegen-plugin/internal/selectors"
+	"github.com/jheel-knot/gpt-imagegen-plugin/internal/session"
 )
 
 // The single generated file in fixtures/conversation.html, rendered through
