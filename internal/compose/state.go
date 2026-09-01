@@ -38,6 +38,28 @@ func (s PageState) DistinctImageIDs() []string {
 	return out
 }
 
+// AltForID returns the alt text of the first <img> whose src maps to id, or
+// "" if none. ImageURLs and Alts are parallel per-tag arrays (one entry per
+// <img>, not per distinct image), so pairing must walk them together by
+// index; indexing Alts with a position taken from the deduplicated id list
+// (DistinctImageIDs) is wrong once a generated image is rendered through
+// more than one <img> tag, which is the common case.
+func (s PageState) AltForID(id string) string {
+	if id == "" {
+		return ""
+	}
+	for i, u := range s.ImageURLs {
+		if capture.FileIDFromURL(u) != id {
+			continue
+		}
+		if i < len(s.Alts) {
+			return s.Alts[i]
+		}
+		return ""
+	}
+	return ""
+}
+
 // Done requires the UI to be quiet AND to hold enough distinct images. The
 // spike failed by returning as soon as any image byte arrived.
 func Done(s PageState, want int) bool {

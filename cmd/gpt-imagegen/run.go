@@ -270,10 +270,11 @@ func generate(prompt, out string, count int, refs []string, stdout, stderr io.Wr
 		if len(data) == 0 {
 			continue
 		}
-		title := ""
-		if i < len(state.Alts) {
-			title = capture.TitleFromAlt(state.Alts[i])
-		}
+		// Alts is parallel to the raw, per-tag ImageURLs, not to the
+		// deduplicated ids: AltForID walks ImageURLs itself to find the
+		// alt that actually belongs to this id, rather than indexing Alts
+		// by this id's position in the deduplicated list.
+		title := capture.TitleFromAlt(state.AltForID(id))
 		ext := capture.ExtFor(rec.Mime(id))
 		dst := capture.OutputPath(out, i, title, ext)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
@@ -289,6 +290,14 @@ func generate(prompt, out string, count int, refs []string, stdout, stderr io.Wr
 
 	if len(images) == 0 {
 		return emit(stdout, envelope.Failure(envelope.CodeNoImage, "image bytes could not be retrieved").WithConversation(convURL))
+	}
+
+	// A partial save is still ok:true (the schema is unchanged; the caller
+	// already knows what it asked for and can compare len(images) to
+	// count), but silently shipping fewer images than requested deserves a
+	// visible warning. stdout stays exactly one line; this goes to stderr.
+	if len(images) < count {
+		fmt.Fprintf(stderr, "warning: saved %d of %d requested images\n", len(images), count)
 	}
 
 	// Archive only now that every file is on disk. A failed run is never

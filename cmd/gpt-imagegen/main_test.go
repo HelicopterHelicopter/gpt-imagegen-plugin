@@ -84,6 +84,32 @@ func TestStdoutHasNoProgressChatter(t *testing.T) {
 	}
 }
 
+// emitPanic is the recover-path helper safeRun calls on a panic. Testing it
+// directly (rather than forcing an actual panic through safeRun) still
+// proves the hard rule holds even when something crashes: exactly one valid
+// JSON line, ok:false, on stdout.
+func TestEmitPanicWritesSingleJSONLine(t *testing.T) {
+	var out bytes.Buffer
+	code := emitPanic(&out, "boom: nil pointer")
+	if code == 0 {
+		t.Fatal("a panic must exit non-zero")
+	}
+	if strings.Count(strings.TrimSpace(out.String()), "\n") != 0 {
+		t.Fatalf("stdout must be exactly one line, got %q", out.String())
+	}
+	var r map[string]any
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+		t.Fatalf("stdout must be a single JSON object, got %q", out.String())
+	}
+	if r["ok"] != false {
+		t.Fatalf("want ok=false, got %v", r["ok"])
+	}
+	errObj, _ := r["error"].(map[string]any)
+	if errObj == nil || errObj["code"] != "REFUSED" {
+		t.Fatalf("want error.code = REFUSED, got %+v", r["error"])
+	}
+}
+
 func TestNoArgsEmitsJSONOnStdout(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run([]string{}, &out, &errBuf)
