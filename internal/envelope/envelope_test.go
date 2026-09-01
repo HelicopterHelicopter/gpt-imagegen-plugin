@@ -59,3 +59,31 @@ func TestFailureOmitsImagesAndCarriesCode(t *testing.T) {
 		t.Fatalf("failure exit code = %d, want 1", r.ExitCode())
 	}
 }
+
+func TestWithConversationIsolatesFailures(t *testing.T) {
+	base := Failure(CodeTimeout, "boom")
+	a := base.WithConversation("https://chatgpt.com/c/url-a")
+	b := base.WithConversation("https://chatgpt.com/c/url-b")
+
+	if a.Error.ConversationURL != "https://chatgpt.com/c/url-a" {
+		t.Fatalf("a.Error.ConversationURL = %q, want %q", a.Error.ConversationURL, "https://chatgpt.com/c/url-a")
+	}
+	if b.Error.ConversationURL != "https://chatgpt.com/c/url-b" {
+		t.Fatalf("b.Error.ConversationURL = %q, want %q", b.Error.ConversationURL, "https://chatgpt.com/c/url-b")
+	}
+	if base.Error.ConversationURL != "" {
+		t.Fatalf("base.Error.ConversationURL = %q, want empty", base.Error.ConversationURL)
+	}
+}
+
+func TestWithConversationOnSuccess(t *testing.T) {
+	r := Success([]Image{}, "https://chatgpt.com/c/conv", false, 1.5)
+	r = r.WithConversation("https://chatgpt.com/c/updated")
+
+	if r.ConversationURL != "https://chatgpt.com/c/updated" {
+		t.Fatalf("r.ConversationURL = %q, want %q", r.ConversationURL, "https://chatgpt.com/c/updated")
+	}
+	if r.Error != nil {
+		t.Fatalf("success must not have error, got %+v", r.Error)
+	}
+}
