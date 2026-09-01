@@ -88,32 +88,48 @@ func (r *Recorder) Start() {
 			if !ok {
 				return
 			}
-			id := FileIDFromURL(ent.url)
-			if id == "" {
-				return
-			}
-			// Record url+mime regardless of whether the body fetch below
-			// succeeds. A GetResponseBody failure is exactly the buffer-
-			// eviction case FetchInPage exists to recover from, so this
-			// metadata must survive that failure rather than being
-			// discarded along with it.
-			r.mu.Lock()
-			r.urls[id] = ent.url
-			r.mimes[id] = ent.mime
-			r.mu.Unlock()
-			res, err := proto.NetworkGetResponseBody{RequestID: e.RequestID}.Call(r.page)
-			if err != nil {
-				return // buffer evicted; FetchInPage is the fallback
-			}
-			data, err := Decode(res.Body, res.Base64Encoded)
-			if err != nil {
-				return
-			}
-			r.mu.Lock()
-			r.files[id] = data
-			r.mu.Unlock()
+			r.recordFinished(ent, func() (string, bool, error) {
+				res, err := proto.NetworkGetResponseBody{RequestID: e.RequestID}.Call(r.page)
+				if err != nil {
+					return "", false, err
+				}
+				return res.Body, res.Base64Encoded, nil
+			})
 		},
 	)()
+}
+
+// recordFinished records metadata for ent and, if fetchBody succeeds, its
+// bytes. Metadata is recorded even when fetchBody fails, because that is the
+// buffer-eviction case the in-page fetch fallback exists to recover. This is
+// the seam that makes the NetworkLoadingFinished handler's logic testable
+// without a browser: Start wires fetchBody to a real CDP call, tests wire it
+// to a stub.
+func (r *Recorder) recordFinished(ent entry, fetchBody func() (body string, isBase64 bool, err error)) {
+	id := FileIDFromURL(ent.url)
+	if id == "" {
+		return
+	}
+	// Record url+mime regardless of whether the body fetch below succeeds.
+	// A fetchBody failure is exactly the buffer-eviction case FetchInPage
+	// exists to recover from, so this metadata must survive that failure
+	// rather than being discarded along with it.
+	r.mu.Lock()
+	r.urls[id] = ent.url
+	r.mimes[id] = ent.mime
+	r.mu.Unlock()
+
+	body, isBase64, err := fetchBody()
+	if err != nil {
+		return // buffer evicted; FetchInPage is the fallback
+	}
+	data, err := Decode(body, isBase64)
+	if err != nil {
+		return
+	}
+	r.mu.Lock()
+	r.files[id] = data
+	r.mu.Unlock()
 }
 
 func (r *Recorder) Files() map[string][]byte {

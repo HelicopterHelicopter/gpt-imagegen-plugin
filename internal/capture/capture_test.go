@@ -2,6 +2,7 @@ package capture
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -63,6 +64,9 @@ func TestDimensions(t *testing.T) {
 // directly on a constructed Recorder (no browser, no Start). It proves
 // Files() hands back a copy: mutating the returned map, or reading it again
 // later, must never observe changes made through the returned map itself.
+// This is a pure accessor-contract test (map-copy semantics); it does not
+// exercise the recording logic in Start/recordFinished, which is covered
+// separately below.
 func TestRecorderFilesReturnsCopy(t *testing.T) {
 	r := NewRecorder(nil)
 	r.mu.Lock()
@@ -97,33 +101,11 @@ func TestRecorderFilesReturnsCopy(t *testing.T) {
 	}
 }
 
-// TestMimeSurvivesBodyEviction proves the fix for the eviction bug: when a
-// generated image's body could not be read from the CDP buffer (which is
-// exactly when FetchInPage's fallback is needed), the mime recorded from the
-// ResponseReceived event must still be retrievable via Mime(), not silently
-// replaced by the "image/png" last-resort default. It drives the Recorder's
-// maps directly under the mutex, deliberately leaving files[id] unset to
-// stand in for "body fetch failed" — no browser involved.
-//
-// Before the fix, Recorder had no urls field at all, so this test failed to
-// compile (undefined: r.urls). See task-10-report.md, "Fix round 1" section,
-// for the exact pre-fix output.
-func TestMimeSurvivesBodyEviction(t *testing.T) {
-	r := NewRecorder(nil)
-	r.mu.Lock()
-	r.urls["file_abc"] = "https://chatgpt.com/backend-api/estuary/content?id=file_abc"
-	r.mimes["file_abc"] = "image/webp"
-	// Deliberately no r.files["file_abc"]: this is the buffer-eviction case
-	// where metadata is known but bytes are not.
-	r.mu.Unlock()
-
-	if got := r.Mime("file_abc"); got != "image/webp" {
-		t.Fatalf("Mime(id) = %q, want %q — a recorded mime must survive a body-fetch failure, not fall back to the image/png default", got, "image/webp")
-	}
-}
-
-// TestURLAccessor exercises URL() the same way TestRecorderFilesReturnsCopy
-// exercises Files(): seed the map directly under the mutex, no browser.
+// TestURLAccessor exercises URL()'s own contract (map lookup, "" for an
+// unknown id) directly, the same way TestRecorderFilesReturnsCopy exercises
+// Files(). URL() has no branching logic beyond that lookup, so poking the
+// map directly is a faithful test of its contract; it is not a substitute
+// for testing recordFinished's recording behavior (see below).
 func TestURLAccessor(t *testing.T) {
 	r := NewRecorder(nil)
 	r.mu.Lock()
@@ -182,11 +164,12 @@ func TestFilesExcludesBytelessEntries(t *testing.T) {
 	}
 }
 
-// TestRecorderConcurrentAccess drives the same lock-protected fields Start's
-// event goroutine would — files, mimes, and urls together — concurrently
+// TestRecorderConcurrentAccess drives the accessor-owned fields concurrently
 // with reads through Files/Mime/URL/IDs, so `go test -race` can catch a
-// missing lock anywhere across all four. It also asserts every concurrent
-// write was observed, which would fail if the mutex ever dropped an update.
+// missing lock in the accessors themselves. The recording PATH (Start's
+// NetworkLoadingFinished handler, via recordFinished) has its own
+// concurrency test below, since that is the code that actually decides what
+// gets written.
 func TestRecorderConcurrentAccess(t *testing.T) {
 	r := NewRecorder(nil)
 	const n = 50
@@ -223,5 +206,158 @@ func TestRecorderConcurrentAccess(t *testing.T) {
 	ids := r.IDs()
 	if len(ids) != n {
 		t.Fatalf("got %d ids after concurrent writes, want %d", len(ids), n)
+	}
+}
+
+// --- recordFinished: the actual NetworkLoadingFinished handler logic ---
+//
+// The tests above poke Recorder's maps directly, which only proves the
+// accessors behave correctly once state exists — it says nothing about
+// whether the recording logic in Start's NetworkLoadingFinished handler
+// puts the right state there in the first place. recordFinished is the
+// seam Start delegates to (wiring fetchBody to a real CDP call); these
+// tests drive it directly with a stub fetchBody, exercising the exact
+// logic that had the eviction bug, without a browser.
+
+// TestRecordFinishedOnFetchFailureKeepsMetadata is the regression test for
+// the eviction bug fixed in round 1: url+mime must be recorded even when
+// fetchBody fails, so Mime/URL/IDs still report the id, while Files() must
+// NOT contain it (no bytes were ever obtained).
+//
+// Mutation check: temporarily deleting the "r.mimes[id] = ent.mime" line
+// from recordFinished (so the mime is never recorded on the failure path)
+// makes this test fail with "Mime(id) = "image/png", want "image/webp"".
+// See task-10-report.md, "Fix round 2", for the exact command and output.
+func TestRecordFinishedOnFetchFailureKeepsMetadata(t *testing.T) {
+	r := NewRecorder(nil)
+	ent := entry{
+		url:  "https://chatgpt.com/backend-api/estuary/content?id=file_abc",
+		mime: "image/webp",
+	}
+	r.recordFinished(ent, func() (string, bool, error) {
+		return "", false, errors.New("buffer evicted")
+	})
+
+	if got := r.Mime("file_abc"); got != "image/webp" {
+		t.Fatalf("Mime(id) = %q, want %q", got, "image/webp")
+	}
+	if got := r.URL("file_abc"); got != ent.url {
+		t.Fatalf("URL(id) = %q, want %q", got, ent.url)
+	}
+	ids := r.IDs()
+	if len(ids) != 1 || ids[0] != "file_abc" {
+		t.Fatalf("IDs() = %v, want [file_abc]", ids)
+	}
+	if files := r.Files(); len(files) != 0 {
+		t.Fatalf("Files() = %v, want empty — the fetch failed, no bytes should be stored", files)
+	}
+}
+
+// TestRecordFinishedOnFetchSuccessStoresBytes is the success-path
+// counterpart: metadata AND bytes both land, through the same seam.
+func TestRecordFinishedOnFetchSuccessStoresBytes(t *testing.T) {
+	r := NewRecorder(nil)
+	ent := entry{
+		url:  "https://chatgpt.com/backend-api/estuary/content?id=file_ok",
+		mime: "image/png",
+	}
+	r.recordFinished(ent, func() (string, bool, error) {
+		return onePxPNG, true, nil
+	})
+
+	want, _ := base64.StdEncoding.DecodeString(onePxPNG)
+	files := r.Files()
+	if string(files["file_ok"]) != string(want) {
+		t.Fatalf("Files()[id] = %v, want decoded PNG bytes", files["file_ok"])
+	}
+	if got := r.Mime("file_ok"); got != "image/png" {
+		t.Fatalf("Mime(id) = %q, want %q", got, "image/png")
+	}
+	if got := r.URL("file_ok"); got != ent.url {
+		t.Fatalf("URL(id) = %q, want %q", got, ent.url)
+	}
+}
+
+// TestRecordFinishedOnDecodeFailureKeepsMetadataButNotBytes covers a fetch
+// that succeeds at the transport level but returns unparseable base64: the
+// url+mime must still be recorded, and no corrupt bytes should land in
+// Files().
+func TestRecordFinishedOnDecodeFailureKeepsMetadataButNotBytes(t *testing.T) {
+	r := NewRecorder(nil)
+	ent := entry{
+		url:  "https://chatgpt.com/backend-api/estuary/content?id=file_bad",
+		mime: "image/jpeg",
+	}
+	r.recordFinished(ent, func() (string, bool, error) {
+		return "!!!not base64!!!", true, nil
+	})
+
+	if files := r.Files(); len(files) != 0 {
+		t.Fatalf("Files() = %v, want empty after a decode failure", files)
+	}
+	if got := r.Mime("file_bad"); got != "image/jpeg" {
+		t.Fatalf("Mime(id) = %q, want %q", got, "image/jpeg")
+	}
+	if got := r.URL("file_bad"); got != ent.url {
+		t.Fatalf("URL(id) = %q, want %q", got, ent.url)
+	}
+}
+
+// TestRecordFinishedIgnoresNonGeneratedURL proves an entry whose URL is not
+// a generated-image URL (FileIDFromURL returns "") records nothing at all —
+// no metadata, no attempted body fetch — and does not panic.
+func TestRecordFinishedIgnoresNonGeneratedURL(t *testing.T) {
+	r := NewRecorder(nil)
+	ent := entry{
+		url:  "https://chatgpt.com/cdn/assets/sprite-shell.svg",
+		mime: "image/svg+xml",
+	}
+	fetchCalled := false
+	r.recordFinished(ent, func() (string, bool, error) {
+		fetchCalled = true
+		return "", false, nil
+	})
+
+	if fetchCalled {
+		t.Fatal("recordFinished must not attempt a body fetch for a non-generated-image URL")
+	}
+	if ids := r.IDs(); len(ids) != 0 {
+		t.Fatalf("IDs() = %v, want empty", ids)
+	}
+	if files := r.Files(); len(files) != 0 {
+		t.Fatalf("Files() = %v, want empty", files)
+	}
+}
+
+// TestRecordFinishedConcurrent drives recordFinished itself from many
+// goroutines, so `go test -race` exercises the real recording path — not
+// just the accessors — for races.
+func TestRecordFinishedConcurrent(t *testing.T) {
+	r := NewRecorder(nil)
+	const n = 50
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := fmt.Sprintf("file_%d", i)
+			ent := entry{
+				url:  fmt.Sprintf("https://chatgpt.com/backend-api/estuary/content?id=%s", id),
+				mime: "image/png",
+			}
+			r.recordFinished(ent, func() (string, bool, error) {
+				return string([]byte{byte(i)}), false, nil
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	files := r.Files()
+	if len(files) != n {
+		t.Fatalf("got %d files after concurrent recordFinished calls, want %d", len(files), n)
+	}
+	ids := r.IDs()
+	if len(ids) != n {
+		t.Fatalf("got %d ids after concurrent recordFinished calls, want %d", len(ids), n)
 	}
 }
