@@ -8,6 +8,7 @@ package tests
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 
 	"github.com/jheelr/gpt-imagegen/internal/compose"
+	"github.com/jheelr/gpt-imagegen/internal/probe"
 	"github.com/jheelr/gpt-imagegen/internal/selectors"
 	"github.com/jheelr/gpt-imagegen/internal/session"
 )
@@ -93,10 +95,16 @@ func TestSelectorsResolveAgainstFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load selectors: %v", err)
 	}
+	// Exactly the keys production reads on a FINISHED conversation. The two
+	// completion keys (loading_state, stop_button) cannot be asserted here:
+	// their whole meaning is "a generation is still running", so they live
+	// in TestCompletionSelectorsResolveAgainstGeneratingFixture below,
+	// against a fixture where one is. Between the two tests, every key in
+	// selectors.json is covered -- which is the property that makes this a
+	// drift detector rather than a spot check.
 	keys := []string{
 		"composer_input",
 		"upload_input",
-		"new_chat_button",
 		"generated_image",
 		"conversation_options",
 		"attachment_remove",
@@ -108,13 +116,79 @@ func TestSelectorsResolveAgainstFixture(t *testing.T) {
 	}
 }
 
+// TestCompletionSelectorsResolveAgainstGeneratingFixture covers the other
+// half of the key set: the two selectors that only exist while a generation
+// is in flight. These are what stop the tool declaring a run finished before
+// the images arrive, and since FIX 3 they come from selectors.json rather
+// than being hardcoded in the state JS -- so a drift here is repairable by
+// editing data, and this test is what catches it.
+func TestCompletionSelectorsResolveAgainstGeneratingFixture(t *testing.T) {
+	p, done := fixturePage(t, "conversation_generating.html")
+	defer done()
+
+	set, err := selectors.Load("")
+	if err != nil {
+		t.Fatalf("load selectors: %v", err)
+	}
+	for _, key := range []string{"loading_state", "stop_button"} {
+		if _, err := compose.Resolve(p, set, key, 5*time.Second); err != nil {
+			t.Errorf("selector %q no longer resolves: %v", key, err)
+		}
+	}
+
+	st, err := compose.ReadState(p, set)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if !st.Loading {
+		t.Error("loading_state must be reported while an image generation is in flight")
+	}
+	if !st.Streaming {
+		t.Error("stop_button must be reported while the turn is still streaming")
+	}
+	if len(st.ImageURLs) != 0 {
+		t.Errorf("no image has arrived yet, got %v", st.ImageURLs)
+	}
+	if compose.Done(st, 1) {
+		t.Fatal("Done must be false while the page is still generating")
+	}
+}
+
+// TestStateJSFollowsAPatchedSelector proves the completion poll is really
+// driven by the selector data and not by a hardcoded string: point
+// generated_image at a selector that matches the fixture's NON-generated
+// asset, and the state must follow the data. This is the difference between
+// a repairable selector and a decorative one.
+func TestStateJSFollowsAPatchedSelector(t *testing.T) {
+	p, done := fixturePage(t, "conversation.html")
+	defer done()
+
+	set, err := selectors.Load("")
+	if err != nil {
+		t.Fatalf("load selectors: %v", err)
+	}
+	set["generated_image"] = []selectors.Candidate{{CSS: `img[alt="ChatGPT"]`}}
+
+	st, err := compose.ReadState(p, set)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if len(st.ImageURLs) != 1 || st.ImageURLs[0] != nonGeneratedSrc {
+		t.Fatalf("ReadState ignored the patched selector: %v", st.ImageURLs)
+	}
+}
+
 // TestReadStateOnFinishedConversation exercises the JS state-reading pipeline
 // (compose.ReadState) against a finished, single-image conversation.
 func TestReadStateOnFinishedConversation(t *testing.T) {
 	p, done := fixturePage(t, "conversation.html")
 	defer done()
 
-	st, err := compose.ReadState(p)
+	set, err := selectors.Load("")
+	if err != nil {
+		t.Fatalf("load selectors: %v", err)
+	}
+	st, err := compose.ReadState(p, set)
 	if err != nil {
 		t.Fatalf("read state: %v", err)
 	}
@@ -169,7 +243,11 @@ func TestReadStateWithTwoDistinctGeneratedImages(t *testing.T) {
 	p, done := fixturePage(t, "conversation_multi_image.html")
 	defer done()
 
-	st, err := compose.ReadState(p)
+	set, err := selectors.Load("")
+	if err != nil {
+		t.Fatalf("load selectors: %v", err)
+	}
+	st, err := compose.ReadState(p, set)
 	if err != nil {
 		t.Fatalf("read state: %v", err)
 	}
@@ -197,5 +275,59 @@ func TestReadStateWithTwoDistinctGeneratedImages(t *testing.T) {
 	}
 	if got := st.AltForID(imgBID); got != imgBAlt {
 		t.Fatalf("AltForID(%s) = %q, want %q", imgBID, got, imgBAlt)
+	}
+}
+
+// TestProbeNeverEmitsABareTagSelector is the guard on the self-heal input.
+// A probe candidate is copied more or less verbatim into
+// ~/.gpt-imagegen/selectors.json and patched to the FRONT of a key, so a css
+// of "button" or "div" does not degrade gracefully: it resolves to the first
+// such element on the page, and the tool would happily type the prompt into
+// it and report success. Every css the probe emits must therefore be
+// selective (an #id or a [data-testid=...]); anything less selective must be
+// omitted, leaving role/name/text as description only.
+func TestProbeNeverEmitsABareTagSelector(t *testing.T) {
+	p, done := fixturePage(t, "conversation_generating.html")
+	defer done()
+
+	cands, err := probe.Collect(p)
+	if err != nil {
+		t.Fatalf("probe collect: %v", err)
+	}
+	if len(cands) == 0 {
+		t.Fatal("probe found no candidates at all; the dump would be useless")
+	}
+
+	actionable := 0
+	for _, c := range cands {
+		if c.CSS == "" {
+			continue
+		}
+		actionable++
+		if !strings.HasPrefix(c.CSS, "#") && !strings.HasPrefix(c.CSS, "[data-testid=") {
+			t.Errorf("probe emitted a non-selective css %q (role=%q name=%q); patched to the front of a key it would match an arbitrary element", c.CSS, c.Role, c.Name)
+		}
+	}
+	if actionable == 0 {
+		t.Fatal("probe emitted no actionable candidate; self-heal would have nothing to copy")
+	}
+
+	// The fixture's id-less, testid-less button must be described but not
+	// given a fabricated selector.
+	found := false
+	for _, c := range cands {
+		if c.Name != "Add photos and files" {
+			continue
+		}
+		found = true
+		if c.CSS != "" {
+			t.Errorf("element with no id and no testid got css %q, want empty", c.CSS)
+		}
+		if c.Actionable() {
+			t.Error("a candidate with neither testid nor css must report Actionable() == false")
+		}
+	}
+	if !found {
+		t.Fatal("probe missed the id-less button; the degradation path is not being exercised")
 	}
 }

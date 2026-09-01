@@ -60,9 +60,9 @@ func Failure(code Code, msg string) Result {
 // recovery path a caller can revisit.
 func (r Result) WithConversation(url string) Result {
 	if r.Error != nil {
-		e := *r.Error          // copy the struct
+		e := *r.Error // copy the struct
 		e.ConversationURL = url
-		r.Error = &e           // point the copy at the returned value only
+		r.Error = &e // point the copy at the returned value only
 	} else {
 		r.ConversationURL = url
 	}

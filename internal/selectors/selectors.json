@@ -5,6 +5,7 @@
     { "css": "div[contenteditable='true']" }
   ],
   "loading_state": [
+    { "css": "[data-testid^='image-gen-loading-state']" },
     { "testid": "image-gen-loading-state" },
     { "testid": "image-gen-loading-state-frame" }
   ],
@@ -14,12 +15,6 @@
   "upload_input": [
     { "testid": "upload-photos-input" },
     { "css": "input[type='file']" }
-  ],
-  "composer_plus": [
-    { "testid": "composer-plus-btn" }
-  ],
-  "new_chat_button": [
-    { "testid": "create-new-chat-button" }
   ],
   "generated_image": [
     { "css": "img[alt^='Generated image: ']" }

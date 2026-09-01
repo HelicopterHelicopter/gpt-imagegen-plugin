@@ -64,13 +64,20 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/gpt-imagegen edit \
 After a successful generation, wire the saved path into whatever referenced it:
 the `<img src>`, the markdown image, the CSS `url()`.
 
-### Partial success with `--count`
+### Partial success
 
-A `--count N` run can still exit `"ok":true` after saving fewer than N images:
-the shortfall is reported only as a warning on stderr, not as a failure. After
-any `generate --count N`, count `len(result.images)` yourself and compare it
-to N. If fewer images were saved than requested, tell the user the actual
-count instead of assuming N images landed.
+A run can exit `"ok":true` having saved fewer images than were requested. The
+shortfall is reported only as a warning on stderr, never in the JSON. So after
+any `generate --count N`, count `result.images` yourself and compare it to N,
+and tell the user the actual count instead of assuming N images landed.
+
+This also covers the timeout-salvage case: if the generation produced images
+but never signalled completion, the tool saves what genuinely arrived and
+returns `"ok":true` with those images and `"archived":false`, rather than
+discarding work that already cost a ChatGPT turn. The conversation is left
+unarchived on purpose — `result.conversation_url` is where the missing images
+can be recovered by hand. Do not re-run to make up the shortfall; that is a
+second turn against the user's account.
 
 ## Handling failure
 
@@ -109,16 +116,66 @@ that was in progress.
 
 On `SELECTOR_MISS`:
 
-1. Read the JSON file at `error.probe`. It lists candidate elements with
-   `testid`, `role`, `name`, `text` and `css`.
-2. Pick the candidate that matches `error.selector_key`.
-3. Merge it into `~/.gpt-imagegen/selectors.json` under that key, at the
-   front of the list. This file holds only the keys that differ from the
-   plugin's built-in defaults, so **merge your patch into the existing JSON
-   object** (read it first if it exists; start from `{}` if it does not) —
-   never overwrite the whole file, or you will silently delete every other
-   repair a previous self-heal made.
+1. Read the JSON file at `error.probe`. Its `note` field restates the rules
+   below; its `candidates` list describes elements with `testid`, `css`,
+   `role`, `name` and `text`. `error.screenshot`, when present, is a PNG of
+   the page as it actually was — open it if the candidate list is ambiguous.
+2. Pick the candidate for `error.selector_key`. **Only `testid` and `css`
+   are actionable.** The resolver understands those two fields and nothing
+   else, so a patch built from `role`, `name` or `text` produces a key with
+   no query at all: it is written without error and the re-run fails in
+   exactly the same way. If no candidate for that element has a `testid` or
+   a `css`, stop and report — there is nothing to patch with.
+3. Merge the patch into `~/.gpt-imagegen/selectors.json`, writing the **new
+   candidate first, followed by the key's existing candidates**.
+
+   Two separate rules, both load-bearing:
+
+   - **Between keys:** merge into the existing JSON object. Read the file
+     first if it exists, start from `{}` if it does not. Overwriting the
+     whole file silently deletes every earlier repair.
+   - **Within a key:** a key in this file **replaces that key's candidate
+     list wholesale** — it does not prepend to it. A single-candidate list
+     therefore discards every fallback the plugin ships for that key, so the
+     next small UI change that a fallback would have absorbed becomes a hard
+     failure. Always repeat the shipped candidates behind your new one.
+
+   The shipped candidates for a key are in the plugin's own data file at
+   `${CLAUDE_PLUGIN_ROOT}/../../internal/selectors/selectors.json`. Read the
+   key from there (and from the user file, if it already has that key) and
+   carry every candidate through.
+
+   Concrete example. `composer_input` ships as:
+
+   ```json
+   { "composer_input": [
+       { "css": "#prompt-textarea" },
+       { "testid": "prompt-textarea" },
+       { "css": "div[contenteditable='true']" }
+   ] }
+   ```
+
+   WRONG — this is a valid patch that quietly deletes all three fallbacks:
+
+   ```json
+   { "composer_input": [ { "testid": "composer-text-input" } ] }
+   ```
+
+   RIGHT — new candidate first, shipped candidates preserved behind it:
+
+   ```json
+   { "composer_input": [
+       { "testid": "composer-text-input" },
+       { "css": "#prompt-textarea" },
+       { "testid": "prompt-textarea" },
+       { "css": "div[contenteditable='true']" }
+   ] }
+   ```
+
 4. Re-run the original command **once**.
 
 If the second run also fails, stop and report, quoting `error.probe`. Never
 loop, and never attempt a second self-heal for the same failure.
+
+Deleting `~/.gpt-imagegen/selectors.json` restores the shipped defaults, which
+is the escape hatch if a repair makes things worse.

@@ -37,8 +37,15 @@ type Browser struct {
 
 // Open attaches to a Chrome already running on our profile, else launches one.
 // The launch flags are load-bearing for avoiding bot detection; do not trim
-// them, and never run headless.
-func Open(headless bool) (*Browser, error) {
+// them, and never run headless in normal operation.
+//
+// hideWindow is an explicit choice, never inferred from headless: spec §6
+// step 5 scopes offscreen positioning to the GENERATION session only. A
+// window the user has to interact with -- sign-in during `setup`, a
+// Cloudflare challenge -- must stay where the user can see it, so those
+// callers pass hideWindow=false. Only the generate/edit/probe paths, which
+// no human ever looks at, pass true.
+func Open(headless, hideWindow bool) (*Browser, error) {
 	dir := ProfileDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -75,11 +82,11 @@ func Open(headless bool) (*Browser, error) {
 	// runs os.RemoveAll(UserDataDir) and would delete the user's login.
 
 	// Hide the automation window offscreen so it never steals focus. We only
-	// do this on the launch path, only when headful (headless has no window
-	// to hide), and only when we have a real pid to target. The error is
-	// deliberately ignored: a visible window is acceptable, a failed run is
-	// not.
-	if !headless && pid != 0 {
+	// do this when the caller explicitly asked for it, only on the launch
+	// path, only when headful (headless has no window to hide), and only
+	// when we have a real pid to target. The error is deliberately ignored:
+	// a visible window is acceptable, a failed run is not.
+	if hideWindow && !headless && pid != 0 {
 		_ = HideWindow(pid)
 	}
 

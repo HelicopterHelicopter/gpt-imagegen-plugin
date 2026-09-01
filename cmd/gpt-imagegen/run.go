@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
 
 	"github.com/jheelr/gpt-imagegen/internal/capture"
@@ -56,8 +58,72 @@ func artifactDir() string {
 	return d
 }
 
+// Window policy, named rather than passed as bare booleans, because getting
+// it wrong is invisible in a diff and catastrophic in use: hiding the setup
+// window moves the sign-in (and any Cloudflare challenge) to {-9000,-9000}
+// while the CLI cheerfully tells the user to sign in "in the Chrome window".
+// Spec S6 step 5 scopes offscreen positioning to the GENERATION session
+// only.
+const (
+	// headless is never true in normal operation: it is the strongest
+	// bot-detection signal there is (spec S6 step 5).
+	headful = false
+
+	// visibleWindow is for any session a human must look at or touch.
+	visibleWindow = false
+	// hiddenWindow is for sessions no human ever sees.
+	hiddenWindow = true
+)
+
+// Stage names for probe dumps and failure envelopes. They are literals
+// chosen here, never user input, so they are safe as file-name components.
+const (
+	stageComposer   = "composer"
+	stageGeneration = "generation"
+)
+
+// openBrowser is the seam every command opens its browser through. It exists
+// so a unit test can assert what a command ASKS for -- notably that setup
+// asks for a visible window -- without launching Chrome.
+var openBrowser = session.Open
+
+// writeScreenshot saves a PNG of the page next to the probe dump and returns
+// its path, or "" if the capture failed. A screenshot is only worth taking
+// on a selector miss, where the whole question is "what does the page
+// actually look like now"; failing to take one must never fail the run,
+// which is why every error here degrades to an empty path.
+func writeScreenshot(p *rod.Page, stage, dir string) string {
+	buf, err := p.Timeout(20*time.Second).Screenshot(false, nil)
+	if err != nil || len(buf) == 0 {
+		return ""
+	}
+	path := filepath.Join(dir, "fail-"+stage+".png")
+	if err := os.WriteFile(path, buf, 0o600); err != nil {
+		return ""
+	}
+	return path
+}
+
+// selectorMissResult builds the one failure the skill is allowed to repair:
+// the probe dump it reads candidates from, the key it must patch, and a
+// screenshot of the page as it actually was. stage is always a caller-side
+// literal, never user input.
+func selectorMissResult(p *rod.Page, miss compose.ErrSelectorMiss, stage string) envelope.Result {
+	dir := artifactDir()
+	probePath, _ := probe.Capture(p, stage, dir)
+	r := envelope.Failure(envelope.CodeSelectorMiss, miss.Error())
+	r.Error.SelectorKey = miss.Key
+	r.Error.Stage = stage
+	r.Error.Probe = probePath
+	r.Error.Screenshot = writeScreenshot(p, stage, dir)
+	return r
+}
+
 func cmdSetup(stdout, stderr io.Writer) int {
-	b, err := session.Open(false)
+	// visibleWindow is load-bearing here, not a preference: this is the
+	// window the user signs in through, and the one a Cloudflare challenge
+	// has to be solved in.
+	b, err := openBrowser(headful, visibleWindow)
 	if err != nil {
 		return emit(stdout, envelope.Failure(envelope.CodeChromeMissing, err.Error()))
 	}
@@ -88,7 +154,9 @@ func cmdDoctor(stdout, stderr io.Writer) int {
 	if _, err := session.ChromePath(); err != nil {
 		return emit(stdout, envelope.Failure(envelope.CodeChromeMissing, err.Error()))
 	}
-	b, err := session.Open(false)
+	// doctor is a diagnostic a human runs and watches, so it stays visible:
+	// seeing the real page is half the diagnosis.
+	b, err := openBrowser(headful, visibleWindow)
 	if err != nil {
 		return emit(stdout, envelope.Failure(envelope.CodeChromeMissing, err.Error()))
 	}
@@ -143,7 +211,8 @@ func cmdProbe(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return emit(stdout, envelope.Failure(envelope.CodeRefused, err.Error()))
 	}
-	b, err := session.Open(false)
+	// Nobody watches a probe run; it only dumps the DOM.
+	b, err := openBrowser(headful, hiddenWindow)
 	if err != nil {
 		return emit(stdout, envelope.Failure(envelope.CodeChromeMissing, err.Error()))
 	}
@@ -161,6 +230,7 @@ func cmdProbe(args []string, stdout, stderr io.Writer) int {
 	r := envelope.Failure(envelope.CodeSelectorMiss, "probe written")
 	r.Error.Probe = path
 	r.Error.Stage = *stage
+	r.Error.Screenshot = writeScreenshot(p, "probe", artifactDir())
 	return emit(stdout, r)
 }
 
@@ -186,7 +256,9 @@ func generate(prompt, out string, count int, refs []string, stdout, stderr io.Wr
 		return emit(stdout, envelope.Failure(envelope.CodeRefused, err.Error()))
 	}
 
-	b, err := session.Open(false)
+	// The generation session is the ONLY one that hides its window: no
+	// human ever looks at it, and it must not steal focus mid-task.
+	b, err := openBrowser(headful, hiddenWindow)
 	if err != nil {
 		return emit(stdout, envelope.Failure(envelope.CodeChromeMissing, err.Error()))
 	}
@@ -210,17 +282,16 @@ func generate(prompt, out string, count int, refs []string, stdout, stderr io.Wr
 	fmt.Fprintln(stderr, "composer ready; sending prompt")
 
 	if err := compose.Send(p, sel, prompt, refs); err != nil {
-		if miss, ok := err.(compose.ErrSelectorMiss); ok {
-			path, _ := probe.Capture(p, "composer", artifactDir())
-			r := envelope.Failure(envelope.CodeSelectorMiss, miss.Error())
-			r.Error.SelectorKey = miss.Key
-			r.Error.Stage = "composer"
-			r.Error.Probe = path
-			return emit(stdout, r)
+		// errors.As, not a bare type assertion: an attachment timeout is
+		// now an ErrSelectorMiss (attachment_remove) and a future wrap
+		// must not silently demote it to TIMEOUT and put it out of
+		// self-heal's reach.
+		var miss compose.ErrSelectorMiss
+		if errors.As(err, &miss) {
+			return emit(stdout, selectorMissResult(p, miss, stageComposer))
 		}
-		// Any other Send failure, including an attachment that never
-		// finished uploading, is a timeout from the caller's perspective:
-		// nothing was sent, so there is nothing to recover.
+		// Any other Send failure is a timeout from the caller's
+		// perspective: nothing was sent, so there is nothing to recover.
 		return emit(stdout, envelope.Failure(envelope.CodeTimeout, err.Error()))
 	}
 
@@ -229,19 +300,86 @@ func generate(prompt, out string, count int, refs []string, stdout, stderr io.Wr
 		convURL = info.URL
 	}
 
-	state, err := compose.WaitDone(p, count, 6*time.Minute)
+	// WaitDone deliberately returns the LAST observed state alongside its
+	// error. waitErr is kept, not returned on, precisely so the salvage
+	// path below can still read that state: a run that produced images but
+	// tripped the deadline has already spent the ChatGPT turn, and under a
+	// no-retry discipline throwing those images away is the worst outcome
+	// available.
+	state, waitErr := compose.WaitDone(p, sel, count, 6*time.Minute)
 	if info, ierr := p.Info(); ierr == nil {
 		convURL = info.URL
 	}
-	if err != nil {
-		return emit(stdout, envelope.Failure(envelope.CodeTimeout, err.Error()).WithConversation(convURL))
+	timedOut := false
+	if waitErr != nil {
+		var miss compose.ErrSelectorMiss
+		if errors.As(waitErr, &miss) {
+			// A completion selector with no usable candidate: repairable,
+			// so report it as SELECTOR_MISS with a probe rather than
+			// burying it in a TIMEOUT.
+			return emit(stdout, selectorMissResult(p, miss, stageGeneration).WithConversation(convURL))
+		}
+		timedOut = true
+		fmt.Fprintf(stderr, "generation did not signal completion (%v); salvaging whatever arrived\n", waitErr)
 	}
 
 	ids := state.DistinctImageIDs()
 	if len(ids) == 0 {
+		if timedOut {
+			return emit(stdout, envelope.Failure(envelope.CodeTimeout, waitErr.Error()).WithConversation(convURL))
+		}
 		return emit(stdout, envelope.Failure(envelope.CodeNoImage, "no generated image in the response").WithConversation(convURL))
 	}
 
+	images, err := saveImages(p, rec, state, ids, out, stderr)
+	if err != nil {
+		return emit(stdout, envelope.Failure(envelope.CodeRefused, err.Error()).WithConversation(convURL))
+	}
+
+	if len(images) == 0 {
+		if timedOut {
+			return emit(stdout, envelope.Failure(envelope.CodeTimeout, waitErr.Error()).WithConversation(convURL))
+		}
+		return emit(stdout, envelope.Failure(envelope.CodeNoImage, "image bytes could not be retrieved").WithConversation(convURL))
+	}
+
+	if timedOut {
+		// Salvaged run: real images on disk, so ok:true with exactly the
+		// images that exist. Deliberately NOT archived -- the conversation
+		// is the recovery path for the images that never arrived.
+		fmt.Fprintf(stderr, "warning: run timed out (%v) and saved %d of %d requested images; the conversation is left unarchived at %s for recovery\n",
+			waitErr, len(images), count, convURL)
+		return emit(stdout, envelope.Success(images, convURL, false, time.Since(start).Seconds()))
+	}
+
+	// A partial save is still ok:true (the schema is unchanged; the caller
+	// already knows what it asked for and can compare len(images) to
+	// count), but silently shipping fewer images than requested deserves a
+	// visible warning. stdout stays exactly one line; this goes to stderr.
+	if len(images) < count {
+		fmt.Fprintf(stderr, "warning: saved %d of %d requested images\n", len(images), count)
+	}
+
+	// Archive only now that every file is on disk. A failed run is never
+	// archived, because its conversation URL is the recovery path. A failure
+	// to archive is cosmetic and must not fail the run.
+	archived := false
+	if err := compose.Archive(p, sel); err != nil {
+		fmt.Fprintln(stderr, "archive skipped:", err)
+	} else {
+		archived = true
+	}
+
+	return emit(stdout, envelope.Success(images, convURL, archived, time.Since(start).Seconds()))
+}
+
+// saveImages writes every generated image it can actually retrieve and
+// returns the envelope entries for them. It is shared by the success path
+// and the timeout-salvage path so the two can never drift: salvaging is the
+// SAME save, just without the archive step afterwards. The only error it
+// returns is a genuine filesystem failure; an image whose bytes cannot be
+// retrieved is skipped, leaving a shorter list rather than failing the run.
+func saveImages(p *rod.Page, rec *capture.Recorder, state compose.PageState, ids []string, out string, stderr io.Writer) ([]envelope.Image, error) {
 	files := rec.Files()
 	var images []envelope.Image
 	for i, id := range ids {
@@ -278,37 +416,14 @@ func generate(prompt, out string, count int, refs []string, stdout, stderr io.Wr
 		ext := capture.ExtFor(rec.Mime(id))
 		dst := capture.OutputPath(out, i, title, ext)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return emit(stdout, envelope.Failure(envelope.CodeRefused, err.Error()).WithConversation(convURL))
+			return images, err
 		}
 		if err := os.WriteFile(dst, data, 0o644); err != nil {
-			return emit(stdout, envelope.Failure(envelope.CodeRefused, err.Error()).WithConversation(convURL))
+			return images, err
 		}
 		w, h, _ := capture.Dimensions(data)
 		images = append(images, envelope.Image{Path: dst, Bytes: len(data), Width: w, Height: h, Title: title})
 		fmt.Fprintf(stderr, "saved %s (%d bytes)\n", dst, len(data))
 	}
-
-	if len(images) == 0 {
-		return emit(stdout, envelope.Failure(envelope.CodeNoImage, "image bytes could not be retrieved").WithConversation(convURL))
-	}
-
-	// A partial save is still ok:true (the schema is unchanged; the caller
-	// already knows what it asked for and can compare len(images) to
-	// count), but silently shipping fewer images than requested deserves a
-	// visible warning. stdout stays exactly one line; this goes to stderr.
-	if len(images) < count {
-		fmt.Fprintf(stderr, "warning: saved %d of %d requested images\n", len(images), count)
-	}
-
-	// Archive only now that every file is on disk. A failed run is never
-	// archived, because its conversation URL is the recovery path. A failure
-	// to archive is cosmetic and must not fail the run.
-	archived := false
-	if err := compose.Archive(p, sel); err != nil {
-		fmt.Fprintln(stderr, "archive skipped:", err)
-	} else {
-		archived = true
-	}
-
-	return emit(stdout, envelope.Success(images, convURL, archived, time.Since(start).Seconds()))
+	return images, nil
 }

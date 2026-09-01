@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jheelr/gpt-imagegen/internal/session"
 )
 
 func TestUnknownCommandEmitsJSONOnStdout(t *testing.T) {
@@ -207,5 +210,79 @@ func TestNoArgsEmitsJSONOnStdout(t *testing.T) {
 	}
 	if strings.Count(strings.TrimSpace(out.String()), "\n") != 0 {
 		t.Fatalf("stdout must be exactly one line, got %q", out.String())
+	}
+}
+
+// TestWindowVisibilityPerCommand asserts what each command ASKS its browser
+// for, through the openBrowser seam, so no Chrome is launched here.
+//
+// The case that matters is setup: HideWindow moves the window to
+// {-9000,-9000}, and setup is the one command whose whole purpose is a
+// window the user has to sign in through (it prints "Sign in to ChatGPT in
+// the Chrome window"). It is also the documented place to solve a Cloudflare
+// challenge. Hiding it is invisible in code review and total in effect,
+// which is exactly the kind of bug a test has to hold down.
+func TestWindowVisibilityPerCommand(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		wantHide bool
+		why      string
+	}{
+		{"setup", []string{"setup"}, false, "the user signs in through this window"},
+		{"doctor", []string{"doctor"}, false, "a human runs doctor and watches it"},
+		{"probe", []string{"probe", "--stage", "composer"}, true, "nobody watches a probe"},
+		{"generate", []string{"generate", "--prompt", "p"}, true, "the generation session is the only hidden one"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// A hermetic HOME keeps the profile dir, the lock and the user
+			// selectors file inside the test's temp dir.
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+
+			// doctor checks the Chrome binary before opening anything, so
+			// give it one that exists.
+			chrome := filepath.Join(home, "chrome")
+			if err := os.WriteFile(chrome, nil, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("GPT_IMAGEGEN_CHROME", chrome)
+
+			args := append([]string(nil), c.args...)
+			if c.name == "generate" {
+				args = append(args, "--out", filepath.Join(home, "out.png"))
+			}
+
+			var called int
+			var gotHeadless, gotHide bool
+			restore := openBrowser
+			openBrowser = func(headless, hideWindow bool) (*session.Browser, error) {
+				called++
+				gotHeadless, gotHide = headless, hideWindow
+				// Fail the open: every command must reach its browser
+				// request before doing anything real, and returning an
+				// error stops the command right there.
+				return nil, errors.New("test seam: no browser")
+			}
+			t.Cleanup(func() { openBrowser = restore })
+
+			var out, errBuf bytes.Buffer
+			if code := run(args, &out, &errBuf); code == 0 {
+				t.Fatalf("%s must fail when the browser cannot open, stdout=%q", c.name, out.String())
+			}
+			if called != 1 {
+				t.Fatalf("openBrowser called %d times, want exactly 1", called)
+			}
+			if gotHeadless {
+				t.Fatal("headless is the strongest bot-detection signal and must never be requested")
+			}
+			if gotHide != c.wantHide {
+				t.Fatalf("%s requested hideWindow=%v, want %v: %s", c.name, gotHide, c.wantHide, c.why)
+			}
+			if strings.Count(strings.TrimSpace(out.String()), "\n") != 0 {
+				t.Fatalf("stdout must be exactly one line, got %q", out.String())
+			}
+		})
 	}
 }

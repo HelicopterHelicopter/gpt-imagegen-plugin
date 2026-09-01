@@ -7,14 +7,50 @@ import (
 	"testing"
 )
 
+// productionKeys is every key the production code actually resolves or
+// queries. It is exhaustive in BOTH directions on purpose: a key the code
+// needs but the data lacks is a guaranteed runtime failure, and a key the
+// data declares but no code reads is a selector that looks maintained,
+// gets self-healed, and changes nothing -- the exact trap that shipped
+// new_chat_button and composer_plus.
+var productionKeys = []string{
+	"composer_input",       // compose.Send
+	"upload_input",         // compose.Send, --ref/edit
+	"attachment_remove",    // compose.waitAttachmentsReady
+	"loading_state",        // compose.ReadState
+	"stop_button",          // compose.ReadState
+	"generated_image",      // compose.ReadState
+	"conversation_options", // compose.Archive
+}
+
 func TestLoadEmbeddedHasKnownKeys(t *testing.T) {
 	s, err := Load("")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	for _, k := range []string{"composer_input", "loading_state", "stop_button", "upload_input", "new_chat_button", "generated_image", "conversation_options"} {
+	for _, k := range productionKeys {
 		if len(s[k]) == 0 {
 			t.Fatalf("embedded set missing key %q", k)
+		}
+	}
+}
+
+// TestEmbeddedHasNoUnusedKeys is the other half: every embedded key must
+// have a production reader. A declared-but-unused key is worse than a
+// missing one, because self-heal will happily write a repair into it and
+// the re-run will fail identically.
+func TestEmbeddedHasNoUnusedKeys(t *testing.T) {
+	s, err := Load("")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	used := map[string]bool{}
+	for _, k := range productionKeys {
+		used[k] = true
+	}
+	for k := range s {
+		if !used[k] {
+			t.Errorf("embedded set declares key %q that no production code reads; use it or delete it", k)
 		}
 	}
 }
@@ -33,6 +69,59 @@ func TestEmbeddedHasAttachmentRemoveKey(t *testing.T) {
 	}
 	if got[0] != "button[aria-label*='Remove' i]" {
 		t.Fatalf("Query(\"attachment_remove\")[0] = %q, want the css form first", got[0])
+	}
+}
+
+// TestUserOverrideReplacesTheWholeKey pins the merge semantic the skill's
+// self-heal instructions have to be written against. A key in the user file
+// REPLACES that key's candidate list; it does not prepend to it. So the
+// natural-looking patch -- one new candidate under one key -- silently
+// deletes every shipped fallback for that key, and the next UI wobble that
+// the fallback would have absorbed becomes a hard failure instead.
+//
+// The behaviour is intentional (a repair must be able to retire a shipped
+// candidate that now matches the wrong element), so the fix is instructional,
+// not behavioural: whoever writes the file must repeat the existing
+// candidates after the new one. This test exists so that instruction can
+// never quietly stop being true.
+func TestUserOverrideReplacesTheWholeKey(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "selectors.json")
+
+	embedded, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(embedded["composer_input"]) < 2 {
+		t.Fatalf("this test needs a key with fallbacks; composer_input has %d", len(embedded["composer_input"]))
+	}
+
+	// The naive patch: one candidate, one key.
+	if err := os.WriteFile(p, []byte(`{"composer_input":[{"css":"#new"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	naive, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := naive.Query("composer_input"); len(got) != 1 || got[0] != "#new" {
+		t.Fatalf("Query = %v, want exactly [#new]: the user file replaces a key wholesale", got)
+	}
+
+	// The correct patch: the new candidate FOLLOWED BY the shipped ones.
+	if err := os.WriteFile(p, []byte(`{"composer_input":[{"css":"#new"},{"css":"#prompt-textarea"},{"testid":"prompt-textarea"},{"css":"div[contenteditable='true']"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	merged, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := merged.Query("composer_input")
+	if len(got) != len(embedded.Query("composer_input"))+1 {
+		t.Fatalf("Query = %v, want the new candidate plus every shipped fallback", got)
+	}
+	if got[0] != "#new" || got[1] != "#prompt-textarea" {
+		t.Fatalf("Query = %v, want the patch first and the shipped fallbacks behind it", got)
 	}
 }
 

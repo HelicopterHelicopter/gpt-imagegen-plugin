@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>fixture: generation in progress</title></head>
+<body>
+  <!--
+  Represents a conversation MID-GENERATION: the image-gen loading state and
+  the stop button are both present, and no generated image has arrived yet.
+
+  This fixture exists because conversation.html cannot carry these two
+  elements: it asserts a FINISHED conversation is quiet, and the completion
+  poll treats the mere presence of either element as "still working". The
+  two completion selectors (loading_state, stop_button) are among the three
+  keys most likely to drift, so they need a DOM to be checked against, and
+  the only honest DOM for them is one where a generation is running.
+
+  The loading-state testid is deliberately the "-frame" variant the spike
+  observed alongside the bare one: the shipped candidate list leads with a
+  data-testid^= prefix match, so this fixture proves the prefix candidate is
+  what actually carries the key rather than the exact-match fallbacks.
+  -->
+  <div data-testid="conversation-turn-1">a plain solid teal square, no text</div>
+
+  <div data-testid="conversation-turn-2">
+    <div data-testid="image-gen-loading-state-frame">
+      <div data-testid="image-gen-loading-state-dots">Creating image</div>
+    </div>
+  </div>
+
+  <div id="prompt-textarea" contenteditable="true"></div>
+  <input type="file" data-testid="upload-photos-input">
+  <button data-testid="stop-button" aria-label="Stop streaming">Stop</button>
+
+  <!--
+  A real, interactive control with NEITHER an id NOR a data-testid. The probe
+  must describe it (role/name/text) but must NOT invent a css for it: the old
+  collectJS degraded such an element to the bare tag name "button", and a
+  patch built from that resolves to the FIRST button on the page. See
+  TestProbeNeverEmitsABareTagSelector.
+  -->
+  <button aria-label="Add photos and files">+</button>
+</body>
+</html>

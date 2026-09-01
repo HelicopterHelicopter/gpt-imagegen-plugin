@@ -45,7 +45,24 @@ branch on `error.code`, never on message text.
   than one image from the same conversation, so style and palette match.
 - `edit` is `generate` with a single existing image attached as a reference.
 - `probe` dumps interactive/image elements from the live ChatGPT page as
-  JSON, for diagnosing a `SELECTOR_MISS` without needing a repro.
+  JSON, for diagnosing a `SELECTOR_MISS` without needing a repro. Each
+  candidate carries `testid` and `css` (the only two fields the selector
+  resolver understands, so the only two that are actionable) plus `role`,
+  `name` and `text` for human identification. The dump's `note` field says
+  so inline. A candidate is given a `css` only when it is genuinely
+  selective — an `#id` or a `[data-testid=...]` — never a bare tag name,
+  which would resolve to an arbitrary element on the page.
+
+Window policy is per command, never inferred: `setup` and `doctor` run a
+**visible** window (the user signs in through it, and it is where a Cloudflare
+challenge has to be solved), while `generate`, `edit` and `probe` move the
+window offscreen on macOS so it never steals focus. Nothing runs headless —
+headless is the strongest bot-detection signal there is.
+
+A `SELECTOR_MISS` failure also carries `error.screenshot`: a PNG of the page
+as it actually looked, written next to the probe dump in the same temp
+directory. It is best-effort — if the capture fails the field is simply
+absent, and the run still reports the miss.
 
 ## Known limitations
 
@@ -65,19 +82,43 @@ branch on `error.code`, never on message text.
   retries a generation automatically under any error code, whether or not
   the code was correctly diagnosed.
 
-- **Partial success with `--count N`.** A `generate --count N` run that
-  manages to save fewer than N images still exits 0 with `"ok":true`; the
-  shortfall is reported only as a warning on stderr, not as part of the JSON
-  result. Callers that care about getting exactly N images must compare
-  `len(images)` in the JSON result against the `--count` they requested.
+- **Partial success.** A run that saves fewer images than requested still
+  exits 0 with `"ok":true`; the shortfall is reported only as a warning on
+  stderr, not as part of the JSON result. Callers that care about getting
+  exactly N images must compare `len(images)` in the JSON result against the
+  `--count` they requested.
 
-- **Selector self-heal is user-scoped and additive only.** The override file
-  at `~/.gpt-imagegen/selectors.json` is written by `Save`, which persists
-  only the keys that differ from the embedded defaults — never the full set.
-  A repair must merge into that file's existing JSON object, never replace
-  it wholesale, or previously-applied repairs are silently lost. Self-heal
-  is also exactly-once: one patch, one retry, then stop; there is no retry
-  loop anywhere in this codebase.
+  This includes the timeout-salvage path: if the page never signals
+  completion but images did arrive, they are saved and returned as a success
+  with `"archived": false`, because the turn has already been spent and
+  discarding real images would be the worst outcome under a no-retry
+  discipline. The conversation is deliberately left unarchived so
+  `conversation_url` remains a recovery path for whatever did not arrive. A
+  timeout that salvaged nothing is still a `TIMEOUT` failure.
+
+- **Selector self-heal is user-scoped, hand-written, and per-key
+  destructive.** The override file at `~/.gpt-imagegen/selectors.json` is
+  written by the skill itself, by hand — nothing in the CLI writes it.
+  (`selectors.Patch` and `selectors.Save` exist as a library surface for
+  building such a file programmatically, but no production code path calls
+  either; they are exercised only by tests.)
+
+  `selectors.Load` merges that file over the embedded defaults **per key,
+  wholesale**: a key present in the user file replaces that key's entire
+  candidate list rather than prepending to it. That is intentional — it is
+  the only way to retire a shipped candidate that now matches the wrong
+  element — but it has two consequences a repair must respect:
+
+  1. Merge into the file's existing JSON object, never replace the file, or
+     previously-applied repairs are silently lost.
+  2. Within a key, write the new candidate *followed by* the shipped
+     candidates. A single-candidate list deletes every fallback for that
+     key.
+
+  `SKILL.md` carries both rules with a worked before/after example, and
+  `TestUserOverrideReplacesTheWholeKey` pins the behaviour. Deleting the file
+  restores the shipped defaults. Self-heal is also exactly-once: one patch,
+  one re-run, then stop; there is no retry loop anywhere in this codebase.
 
 ## Development
 

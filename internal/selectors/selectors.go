@@ -35,6 +35,16 @@ func UserPath() (string, error) {
 
 // Load merges a user override over the embedded defaults, per key. An empty
 // userPath, or a missing file, yields the defaults alone.
+//
+// The merge is per key and WHOLESALE: a key present in the user file
+// replaces that key's entire candidate list, it does not prepend to it. That
+// is deliberate -- it is the only way a repair can retire a shipped
+// candidate that now matches the wrong element -- but it means a patch of
+// {"composer_input":[{"css":"#new"}]} deletes every shipped fallback for
+// composer_input. Anything writing this file (today, the skill, by hand)
+// must therefore write the new candidate FOLLOWED BY the key's existing
+// candidates. SKILL.md carries that instruction with a worked example;
+// TestUserOverrideReplacesTheWholeKey pins the behaviour.
 func Load(userPath string) (Set, error) {
 	base := Set{}
 	if err := json.Unmarshal(embedded, &base); err != nil {
@@ -76,11 +86,21 @@ func (s Set) Query(key string) []string {
 }
 
 // Patch puts a candidate at the front of a key's list.
+//
+// NOTE: nothing in the CLI calls Patch or Save. Self-heal is performed by
+// the skill, which reads the probe dump and writes
+// ~/.gpt-imagegen/selectors.json itself; these two are a library surface
+// kept for callers that want to build a delta file programmatically. Do not
+// document them as the mechanism that writes that file -- the README says
+// what actually happens.
 func (s Set) Patch(key string, c Candidate) {
 	s[key] = append([]Candidate{c}, s[key]...)
 }
 
-// Save persists only the delta from embedded defaults to the given path. This
+// Save persists only the delta from embedded defaults to the given path.
+//
+// Like Patch, Save has no production caller today (see the note on Patch).
+// This
 // ensures that a plugin upgrade can improve a selector that was not patched, and
 // deleting the file restores all shipped defaults. Keys absent from embedded are
 // always written. Keep MkdirAll 0o700 and file mode 0o600.
