@@ -25,7 +25,14 @@ func ParseAuthBody(body []byte) (AuthState, error) {
 	}
 	sort.Strings(keys)
 	u, ok := m["user"]
-	return AuthState{LoggedIn: ok && u != nil, Keys: keys}, nil
+	loggedIn := false
+	if ok && u != nil {
+		// User is logged in only if "user" is a non-empty object.
+		if userObj, isMap := u.(map[string]any); isMap && len(userObj) > 0 {
+			loggedIn = true
+		}
+	}
+	return AuthState{LoggedIn: loggedIn, Keys: keys}, nil
 }
 
 // Summary is deliberately keys-only. Never add values to this.

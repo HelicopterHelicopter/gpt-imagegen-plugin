@@ -54,3 +54,27 @@ func TestParseAuthBodyNonJSON(t *testing.T) {
 		t.Fatal("non-JSON body must error so the caller reports NOT_LOGGED_IN")
 	}
 }
+
+func TestParseAuthBodyUserMustBeNonEmptyObject(t *testing.T) {
+	tests := []struct {
+		body         string
+		wantLoggedIn bool
+	}{
+		{`{"user": false}`, false},
+		{`{"user": ""}`, false},
+		{`{"user": 0}`, false},
+		{`{"user": []}`, false},
+		{`{"user": {}}`, false}, // empty object is not logged in
+		{`{"user": {"id":"x"}}`, true},
+	}
+
+	for _, tt := range tests {
+		st, err := ParseAuthBody([]byte(tt.body))
+		if err != nil {
+			t.Fatalf("parse %q: %v", tt.body, err)
+		}
+		if st.LoggedIn != tt.wantLoggedIn {
+			t.Fatalf("parse %q: LoggedIn = %v, want %v", tt.body, st.LoggedIn, tt.wantLoggedIn)
+		}
+	}
+}

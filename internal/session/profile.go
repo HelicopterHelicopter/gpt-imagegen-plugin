@@ -4,11 +4,8 @@ package session
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -30,56 +27,50 @@ func LockPath() string {
 	return filepath.Join(filepath.Dir(ProfileDir()), "lock")
 }
 
-type Lock struct{ path string }
+type Lock struct {
+	path string
+	f    *os.File // Must stay open for the lock's lifetime
+}
 
 // AcquireLock serialises the send moment so two Claude sessions cannot type
-// into the same composer. A lock whose owning PID is gone is reclaimed.
+// into the same composer. Uses advisory flock which is released automatically
+// by the kernel if the process dies.
 func AcquireLock(path string, timeout time.Duration) (*Lock, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if err == nil {
-			fmt.Fprintf(f, "%d", os.Getpid())
-			f.Close()
-			return &Lock{path: path}, nil
-		}
-		if !os.IsExist(err) {
-			return nil, err
-		}
-		if stale(path) {
-			_ = os.Remove(path)
-			continue
-		}
 		if time.Now().After(deadline) {
 			return nil, ErrLocked
 		}
-		time.Sleep(100 * time.Millisecond)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+		if err != nil {
+			return nil, err
+		}
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return &Lock{path: path, f: f}, nil
+		}
+		f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			if time.Now().After(deadline) {
+				return nil, ErrLocked
+			}
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		return nil, err
 	}
-}
-
-func stale(path string) bool {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return true
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil || pid <= 0 {
-		return true
-	}
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return true
-	}
-	// On Unix, signal 0 tests for existence without delivering a signal.
-	return p.Signal(syscall.Signal(0)) != nil
 }
 
 func (l *Lock) Release() error {
-	if l == nil || l.path == "" {
+	if l == nil || l.f == nil {
 		return nil
 	}
-	return os.Remove(l.path)
+	fd := int(l.f.Fd())
+	err := syscall.Flock(fd, syscall.LOCK_UN)
+	l.f.Close()
+	l.f = nil
+	return err
 }
