@@ -26,5 +26,9 @@
   ],
   "conversation_options": [
     { "testid": "conversation-options-button" }
+  ],
+  "attachment_remove": [
+    { "css": "button[aria-label*='Remove' i]" },
+    { "testid": "attachment-remove-button" }
   ]
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -27,10 +28,19 @@ type Dump struct {
 	Candidates []Candidate `json:"candidates"`
 }
 
+// WriteDump writes a probe dump for stage into dir as JSON and returns the
+// path written. stage is sanitised to a safe file-name component before it
+// is used in the path or recorded in the dump: it is reduced to its base
+// name, and any path separator or ".." sequence still present is replaced,
+// falling back to "unknown" if nothing safe remains. WriteDump is exported
+// and stage may originate from caller-controlled strings, so without this a
+// stage like "../../etc/foo" could escape dir (filepath.Join cleans the
+// joined path, so the traversal is not caught by Join alone).
 func WriteDump(dir, stage, url string, cands []Candidate) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
+	stage = sanitizeStage(stage)
 	d := Dump{Stage: stage, URL: url, CapturedAt: time.Now().UTC().Format(time.RFC3339), Candidates: cands}
 	b, err := json.MarshalIndent(d, "", "  ")
 	if err != nil {
@@ -38,6 +48,21 @@ func WriteDump(dir, stage, url string, cands []Candidate) (string, error) {
 	}
 	p := filepath.Join(dir, fmt.Sprintf("probe-%s.json", stage))
 	return p, os.WriteFile(p, append(b, '\n'), 0o600)
+}
+
+// sanitizeStage reduces stage to a safe, single-component file-name
+// fragment: filepath.Base drops any leading directories, and any residual
+// path separator or ".." sequence is replaced so the result cannot be used
+// to traverse out of the directory WriteDump joins it into. An empty or
+// still-unsafe result falls back to "unknown".
+func sanitizeStage(stage string) string {
+	stage = filepath.Base(stage)
+	stage = strings.ReplaceAll(stage, string(os.PathSeparator), "_")
+	stage = strings.ReplaceAll(stage, "..", "_")
+	if stage == "" || stage == "." || stage == string(os.PathSeparator) {
+		return "unknown"
+	}
+	return stage
 }
 
 // collectJS enumerates interactive and image elements with everything needed

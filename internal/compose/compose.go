@@ -44,6 +44,72 @@ func NewChat(p *rod.Page) error {
 	return nil
 }
 
+// attachUploadTimeout bounds how long Send waits for reference files to
+// finish uploading before it fails loudly instead of sending an unattached
+// prompt.
+const attachUploadTimeout = 60 * time.Second
+
+const attachPollInterval = 500 * time.Millisecond
+
+// countMatchesJS counts elements matching a CSS selector passed as an arg,
+// so waitAttachmentsReady can probe each attachment_remove candidate.
+const countMatchesJS = `(sel) => document.querySelectorAll(sel).length`
+
+// countRemovalControls returns the highest match count seen across the
+// candidate selectors for a key. Candidates are alternates for the same
+// control (e.g. a css fallback and a testid), not additive signals, so the
+// max avoids double-counting when more than one candidate matches the same
+// elements.
+func countRemovalControls(p *rod.Page, sels []string) (int, error) {
+	max := 0
+	for _, sel := range sels {
+		res, err := p.Eval(countMatchesJS, sel)
+		if err != nil {
+			return 0, err
+		}
+		if n := res.Value.Int(); n > max {
+			max = n
+		}
+	}
+	return max, nil
+}
+
+// attachmentsReady is the pure decision behind waitAttachmentsReady's poll
+// loop, split out so it can be unit-tested without a browser: proceed once
+// at least one removal control exists per attached file.
+func attachmentsReady(got, want int) bool {
+	return got >= want
+}
+
+// waitAttachmentsReady polls for one removal control per attached file --
+// that is the signal ChatGPT has actually ingested the file, which is more
+// reliable than a filename or a generic upload-progress indicator that can
+// lag behind or never appear for a fast upload. It never uses a fixed sleep
+// as its completion signal: on timeout it returns a descriptive error
+// rather than letting Send silently proceed, because a run that sends with
+// an unattached reference produces an image that ignored the reference and
+// looks indistinguishable from a bad generation.
+func waitAttachmentsReady(p *rod.Page, s selectors.Set, want int, timeout time.Duration) error {
+	sels := s.Query("attachment_remove")
+	if len(sels) == 0 {
+		return ErrSelectorMiss{Key: "attachment_remove"}
+	}
+	deadline := time.Now().Add(timeout)
+	var got int
+	for {
+		if n, err := countRemovalControls(p, sels); err == nil {
+			got = n
+			if attachmentsReady(got, want) {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("attachments did not finish uploading: saw %d of %d removal controls after %s", got, want, timeout)
+		}
+		time.Sleep(attachPollInterval)
+	}
+}
+
 // Send types the prompt, attaches any reference files, and submits.
 func Send(p *rod.Page, s selectors.Set, prompt string, refs []string) error {
 	if len(refs) > 0 {
@@ -54,13 +120,20 @@ func Send(p *rod.Page, s selectors.Set, prompt string, refs []string) error {
 		if err := in.SetFiles(refs); err != nil {
 			return fmt.Errorf("attach refs: %w", err)
 		}
-		time.Sleep(4 * time.Second) // let upload chips settle
+		if err := waitAttachmentsReady(p, s, len(refs), attachUploadTimeout); err != nil {
+			return err
+		}
 	}
 	el, err := Resolve(p, s, "composer_input", 20*time.Second)
 	if err != nil {
 		return err
 	}
 	if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
+		return err
+	}
+	// Clear any leftover text (e.g. a retry against a composer that skipped
+	// NewChat) so the prompt replaces it instead of Input appending after it.
+	if err := el.SelectAllText(); err != nil {
 		return err
 	}
 	if err := el.Input(prompt); err != nil {

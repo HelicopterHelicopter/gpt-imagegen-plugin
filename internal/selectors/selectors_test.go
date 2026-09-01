@@ -19,6 +19,23 @@ func TestLoadEmbeddedHasKnownKeys(t *testing.T) {
 	}
 }
 
+func TestEmbeddedHasAttachmentRemoveKey(t *testing.T) {
+	s, err := Load("")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(s["attachment_remove"]) == 0 {
+		t.Fatal("embedded set missing key \"attachment_remove\"")
+	}
+	got := s.Query("attachment_remove")
+	if len(got) == 0 {
+		t.Fatal("Query(\"attachment_remove\") returned no candidates")
+	}
+	if got[0] != "button[aria-label*='Remove' i]" {
+		t.Fatalf("Query(\"attachment_remove\")[0] = %q, want the css form first", got[0])
+	}
+}
+
 func TestQueryOrderPrefersTestID(t *testing.T) {
 	s := Set{"k": {{TestID: "the-testid"}, {CSS: "#fallback"}}}
 	got := s.Query("k")
