@@ -1,6 +1,6 @@
 out/
 *.png
-gpt-imagegen
+/gpt-imagegen
 dist/
 plugins/gpt-imagegen/bin/
 .superpowers/
