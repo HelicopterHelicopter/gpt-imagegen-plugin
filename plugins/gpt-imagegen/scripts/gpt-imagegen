@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Locate the plugin binary regardless of where the plugin is installed.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bin="$here/../bin/gpt-imagegen"
+if [[ ! -x "$bin" ]]; then
+  echo '{"ok":false,"error":{"code":"CHROME_MISSING","message":"gpt-imagegen binary not built; run make build"}}'
+  exit 1
+fi
+exec "$bin" "$@"
