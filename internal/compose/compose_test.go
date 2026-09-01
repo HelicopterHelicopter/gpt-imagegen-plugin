@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jheel-knot/gpt-imagegen-plugin/internal/selectors"
+	"github.com/HelicopterHelicopter/gpt-imagegen-plugin/internal/selectors"
 )
 
 func TestErrSelectorMissIncludesKey(t *testing.T) {

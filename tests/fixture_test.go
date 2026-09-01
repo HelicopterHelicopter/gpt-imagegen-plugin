@@ -15,10 +15,10 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 
-	"github.com/jheel-knot/gpt-imagegen-plugin/internal/compose"
-	"github.com/jheel-knot/gpt-imagegen-plugin/internal/probe"
-	"github.com/jheel-knot/gpt-imagegen-plugin/internal/selectors"
-	"github.com/jheel-knot/gpt-imagegen-plugin/internal/session"
+	"github.com/HelicopterHelicopter/gpt-imagegen-plugin/internal/compose"
+	"github.com/HelicopterHelicopter/gpt-imagegen-plugin/internal/probe"
+	"github.com/HelicopterHelicopter/gpt-imagegen-plugin/internal/selectors"
+	"github.com/HelicopterHelicopter/gpt-imagegen-plugin/internal/session"
 )
 
 // The single generated file in fixtures/conversation.html, rendered through

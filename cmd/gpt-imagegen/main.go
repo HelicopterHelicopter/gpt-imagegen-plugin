@@ -6,7 +6,7 @@ import (
 	"os"
 	"runtime/debug"
 
-	"github.com/jheel-knot/gpt-imagegen-plugin/internal/envelope"
+	"github.com/HelicopterHelicopter/gpt-imagegen-plugin/internal/envelope"
 )
 
 func main() {

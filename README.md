@@ -23,7 +23,7 @@ auto-triggering skill, and slash commands.
 Add this repo as a marketplace and install the plugin:
 
 ```
-/plugin marketplace add jheel-knot/gpt-imagegen-plugin
+/plugin marketplace add HelicopterHelicopter/gpt-imagegen-plugin
 /plugin install gpt-imagegen@gpt-imagegen
 ```
 

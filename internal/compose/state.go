@@ -5,7 +5,7 @@ package compose
 import (
 	"encoding/json"
 
-	"github.com/jheel-knot/gpt-imagegen-plugin/internal/capture"
+	"github.com/HelicopterHelicopter/gpt-imagegen-plugin/internal/capture"
 )
 
 type PageState struct {
