@@ -20,6 +20,11 @@ func TestIsGeneratedImageURL(t *testing.T) {
 		{"auth0 avatar", "https://cdn.auth0.com/avatars/jr.png", false},
 		{"ecosystem icon", "https://chatgpt.com/images/ecosystem/apps/slack/icon.png", false},
 		{"empty", "", false},
+		{"attacker host", "https://attacker.example.com/backend-api/estuary/content?id=file_x", false},
+		{"suffix confusion", "https://chatgpt.com.evil.com/backend-api/estuary/content?id=file_x", false},
+		{"oaiusercontent subdomain", "https://cdn.oaiusercontent.com/backend-api/estuary/content?id=file_x", true},
+		{"non-file prefix", "https://chatgpt.com/backend-api/estuary/content?id=notaprefix", false},
+		{"with port", "https://chatgpt.com:443/backend-api/estuary/content?id=file_x", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -36,5 +41,27 @@ func TestFileIDFromURL(t *testing.T) {
 	}
 	if got := FileIDFromURL("https://chatgpt.com/cdn/assets/x.svg"); got != "" {
 		t.Fatalf("want empty for non-generated url, got %q", got)
+	}
+}
+
+func TestIsGeneratedImageURLAndFileIDFromURLAgree(t *testing.T) {
+	testURLs := []string{
+		genURL,
+		"https://chatgpt.com/backend-api/estuary/content?id=file_x",
+		"https://attacker.example.com/backend-api/estuary/content?id=file_x",
+		"https://chatgpt.com.evil.com/backend-api/estuary/content?id=file_x",
+		"https://cdn.oaiusercontent.com/backend-api/estuary/content?id=file_x",
+		"https://chatgpt.com/backend-api/estuary/content?id=notaprefix",
+		"https://chatgpt.com:443/backend-api/estuary/content?id=file_x",
+		"https://chat.openai.com/backend-api/estuary/content?id=file_y",
+		"",
+	}
+	for _, u := range testURLs {
+		isGen := IsGeneratedImageURL(u)
+		id := FileIDFromURL(u)
+		hasID := id != ""
+		if isGen != hasID {
+			t.Fatalf("agreement failed for %q: IsGeneratedImageURL=%v but FileIDFromURL=%q", u, isGen, id)
+		}
 	}
 }

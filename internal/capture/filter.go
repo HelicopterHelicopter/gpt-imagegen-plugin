@@ -12,8 +12,9 @@ import (
 const generatedPath = "/backend-api/estuary/content"
 
 // IsGeneratedImageURL reports whether a URL is a generated image rather than
-// ChatGPT's own UI furniture. Matching on path, not size: the spike showed a
-// size heuristic captures sprite sheets and avatars.
+// ChatGPT's own UI furniture. Enforces an OpenAI host allowlist and requires
+// the id parameter to have the file_ prefix. Matching on path, not size: the
+// spike showed a size heuristic captures sprite sheets and avatars.
 func IsGeneratedImageURL(u string) bool {
 	if u == "" {
 		return false
@@ -22,7 +23,31 @@ func IsGeneratedImageURL(u string) bool {
 	if err != nil {
 		return false
 	}
-	return parsed.Path == generatedPath && parsed.Query().Get("id") != ""
+	if parsed.Path != generatedPath {
+		return false
+	}
+	id := parsed.Query().Get("id")
+	if !strings.HasPrefix(id, "file_") {
+		return false
+	}
+	return isOpenAIHost(parsed.Hostname())
+}
+
+// isOpenAIHost reports whether a hostname is an allowed OpenAI domain.
+func isOpenAIHost(hostname string) bool {
+	if hostname == "" {
+		return false
+	}
+	hostname = strings.ToLower(hostname)
+	// Exact matches
+	if hostname == "chatgpt.com" || hostname == "chat.openai.com" {
+		return true
+	}
+	// Subdomain matches
+	if strings.HasSuffix(hostname, ".chatgpt.com") || strings.HasSuffix(hostname, ".oaiusercontent.com") {
+		return true
+	}
+	return false
 }
 
 // FileIDFromURL returns the file_... id, used to tell distinct images apart
