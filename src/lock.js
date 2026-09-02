@@ -29,12 +29,43 @@ const crypto = require('node:crypto');
 //      bytes read, and immediately before removing, re-read and compare;
 //      only remove if the file still holds exactly what was inspected.
 //
+// A fourth hole is structural to this scheme rather than a Go-review bug:
+// Go's flock made file creation and lock acquisition the SAME atomic
+// kernel operation, so a crash could never leave an existing-but-unlocked
+// file behind. This PID-file scheme has a real (if narrow) window where
+// that happens: a process can die between `fs.openSync(path, 'wx')` and
+// writing its pid+nonce payload, leaving an empty or truncated file with
+// no pid to check liveness against. Left alone, such a record is neither
+// "alive" nor "stale" by the pid check -- it is undecidable forever, and
+// every future acquireLock() times out with PROFILE_LOCKED permanently.
+// That is an availability hole, not a correctness one (it still fails
+// CLOSED -- it never grants two winners -- it just never grants any),
+// but it violates the same "a crashed run must not wedge the tool
+// forever" guarantee the pid-liveness check exists to provide. The fix:
+// an unparseable record is reclaimed once it has been unparseable for
+// longer than UNPARSEABLE_LOCK_MAX_AGE_MS -- long enough that no live
+// acquirer could still be mid-write, since a live holder writes its
+// record microseconds after creating the file -- using the exact same
+// read-immediately-before-unlink-and-compare-exactly discipline as bug
+// #3's stale reclaim (content AND mtime must both still match what was
+// inspected). This heuristic applies ONLY to records that fail to parse;
+// a well-formed record is decided purely by pid liveness regardless of
+// its age, no matter how old its mtime is.
+//
 // Port of internal/session/profile.go's AcquireLock/Release, deliberately
 // reimplemented rather than literally translated since Go's flock has no
 // Node equivalent.
 
 const POLL_INTERVAL_MS = 100;
 const LOCK_FILE_MODE = 0o644;
+
+// How long a lock file may remain unparseable (empty, truncated, or plain
+// garbage) before it is treated as a crash artifact rather than a live
+// acquire that just hasn't finished its single write() yet. See the
+// fourth-hole note above for why this is needed and why it is safe: a
+// live holder's write happens microseconds after its open(), so anything
+// still unparseable a full 10 seconds later cannot belong to one.
+const UNPARSEABLE_LOCK_MAX_AGE_MS = 10_000;
 
 /**
  * Thrown by acquireLock() on timeout. `.code` is the discriminant a caller
@@ -176,10 +207,55 @@ function acquireLock(lockPath, timeoutMs) {
     const info = parseLockFile(raw);
     if (info === null) {
       // Not yet a complete record (another process is mid-write) or plain
-      // garbage. Either way, not evidence of anything -- wait and re-look,
-      // never assume stale from an unreadable record.
-      if (Date.now() >= deadline) throw new LockTimeoutError(lockPath, timeoutMs);
-      sleepSync(POLL_INTERVAL_MS);
+      // garbage left by a crash in that same window (the fourth hole,
+      // see header comment). Which of the two it is turns entirely on
+      // age: a live holder finishes its write microseconds after
+      // creating the file, so only a record that has stayed unparseable
+      // past UNPARSEABLE_LOCK_MAX_AGE_MS can safely be called a crash
+      // artifact.
+      let st;
+      try {
+        st = fs.statSync(lockPath);
+      } catch (err) {
+        if (err.code === 'ENOENT') continue; // vanished; retry from the top
+        throw err;
+      }
+      const ageMs = Date.now() - st.mtimeMs;
+      if (ageMs < UNPARSEABLE_LOCK_MAX_AGE_MS) {
+        // Still within the window a live in-progress write could explain
+        // it. Not evidence of anything yet -- wait and re-look, never
+        // assume a crash from a merely-young unreadable record.
+        if (Date.now() >= deadline) throw new LockTimeoutError(lockPath, timeoutMs);
+        sleepSync(POLL_INTERVAL_MS);
+        continue;
+      }
+
+      // Old enough that this can only be a crash artifact. Reclaim it
+      // with the same safe sequence as a stale pid-bearing lock (bug
+      // #3): re-read AND re-stat immediately before removing, and only
+      // unlink if both the bytes and the mtime are still exactly what
+      // was just inspected. Any mismatch means someone else already
+      // touched this file since our read -- do not delete what we no
+      // longer know to be the same artifact.
+      let raw2, st2;
+      try {
+        raw2 = fs.readFileSync(lockPath, 'utf8');
+        st2 = fs.statSync(lockPath);
+      } catch (err) {
+        if (err.code === 'ENOENT') continue; // someone else already reclaimed it
+        throw err;
+      }
+      if (raw2 !== raw || st2.mtimeMs !== st.mtimeMs) {
+        continue; // changed under us; do not touch, re-evaluate from the top
+      }
+      try {
+        fs.unlinkSync(lockPath);
+      } catch (err) {
+        if (err.code === 'ENOENT') continue; // a racing reclaimer beat us to it
+        throw err;
+      }
+      // Removed the crash artifact. Loop back and attempt the atomic
+      // create again immediately.
       continue;
     }
 
@@ -253,4 +329,10 @@ function releaseLock(handle) {
   }
 }
 
-module.exports = { acquireLock, releaseLock, LockTimeoutError, isProcessAlive };
+module.exports = {
+  acquireLock,
+  releaseLock,
+  LockTimeoutError,
+  isProcessAlive,
+  UNPARSEABLE_LOCK_MAX_AGE_MS,
+};

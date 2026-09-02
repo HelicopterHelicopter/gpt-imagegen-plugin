@@ -9,7 +9,12 @@ const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 
 const { profileDir, lockPath } = require('../src/profile');
-const { acquireLock, releaseLock, LockTimeoutError } = require('../src/lock');
+const {
+  acquireLock,
+  releaseLock,
+  LockTimeoutError,
+  UNPARSEABLE_LOCK_MAX_AGE_MS,
+} = require('../src/lock');
 
 const LOCK_MODULE = path.join(__dirname, '..', 'src', 'lock.js');
 
@@ -29,6 +34,12 @@ process.on('exit', () => {
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'gpt-imagegen-lock-test-'));
+}
+
+/** Backdates a file's mtime (and atime) to `ageMs` in the past. */
+function backdate(filePath, ageMs) {
+  const t = new Date(Date.now() - ageMs);
+  fs.utimesSync(filePath, t, t);
 }
 
 // --- profile.js -------------------------------------------------------
@@ -164,6 +175,99 @@ test('a lock naming a live process owned by another user is not stolen', () => {
     const onDisk = JSON.parse(fs.readFileSync(p, 'utf8'));
     assert.equal(onDisk.pid, 1);
     assert.equal(onDisk.nonce, 'root-owned');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a well-formed record naming a live pid is never reclaimed, no matter its mtime', () => {
+  const dir = tmpDir();
+  try {
+    const p = path.join(dir, 'lock');
+    fs.writeFileSync(p, JSON.stringify({ pid: 1, nonce: 'root-owned' }));
+    // Backdate by an hour -- far past UNPARSEABLE_LOCK_MAX_AGE_MS. The
+    // mtime heuristic must apply ONLY to unparseable records; a
+    // well-formed one is decided purely by isProcessAlive, regardless of
+    // age. If this test fails, the mtime-reclaim fix has leaked into the
+    // well-formed-record path and weakened bug #1's guarantee.
+    backdate(p, 60 * 60 * 1000);
+    assert.throws(
+      () => acquireLock(p, 300),
+      (err) => err instanceof LockTimeoutError && err.code === 'PROFILE_LOCKED'
+    );
+    const onDisk = JSON.parse(fs.readFileSync(p, 'utf8'));
+    assert.equal(onDisk.pid, 1);
+    assert.equal(onDisk.nonce, 'root-owned');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- lock.js: an unparseable lock file must not wedge the tool forever -
+//
+// Fix round 1. Finding: if a process dies between fs.openSync(path, 'wx')
+// and writing its pid+nonce payload, the file exists but is empty (or
+// otherwise unparseable). parseLockFile() correctly refuses to guess a
+// pid out of it, but with no pid to check liveness against, nothing ever
+// reclaimed it -- acquireLock() would time out with PROFILE_LOCKED
+// forever, and the only recovery was a human deleting a file they don't
+// know exists. Go's flock never had this window (creation and locking
+// were the same atomic operation); this PID-file scheme reintroduces it.
+// Fixed with an age-based heuristic: an unparseable record is reclaimed
+// once it has been unparseable for longer than UNPARSEABLE_LOCK_MAX_AGE_MS,
+// via the same read-and-compare-before-unlink discipline as bug #3.
+
+test('an empty lock file older than the threshold is reclaimed promptly', () => {
+  const dir = tmpDir();
+  try {
+    const p = path.join(dir, 'lock');
+    fs.writeFileSync(p, '');
+    backdate(p, UNPARSEABLE_LOCK_MAX_AGE_MS + 1000);
+    const start = Date.now();
+    const lock = acquireLock(p, 5000);
+    const elapsed = Date.now() - start;
+    // Must succeed immediately on inspecting it -- not merely before the
+    // 5s timeout, but fast, since the reclaim happens on the very first
+    // loop iteration once the age check passes (no poll-interval wait).
+    assert.ok(elapsed < 1000, `reclaim took too long: ${elapsed}ms (want promptly, well under 1s)`);
+    releaseLock(lock);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an empty lock file with a fresh mtime is NOT reclaimed (still waiting)', () => {
+  const dir = tmpDir();
+  try {
+    const p = path.join(dir, 'lock');
+    fs.writeFileSync(p, ''); // fresh mtime, no backdating
+    const start = Date.now();
+    assert.throws(
+      () => acquireLock(p, 300),
+      (err) => err instanceof LockTimeoutError && err.code === 'PROFILE_LOCKED'
+    );
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed >= 250, `acquire returned too early: ${elapsed}ms (want ~300ms)`);
+    // The file must still be there, untouched -- a live in-progress
+    // write must never be stolen from.
+    assert.equal(fs.existsSync(p), true);
+    assert.equal(fs.readFileSync(p, 'utf8'), '');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a malformed (non-JSON) lock file older than the threshold is reclaimed promptly', () => {
+  const dir = tmpDir();
+  try {
+    const p = path.join(dir, 'lock');
+    fs.writeFileSync(p, 'this is not json{{{');
+    backdate(p, UNPARSEABLE_LOCK_MAX_AGE_MS + 1000);
+    const start = Date.now();
+    const lock = acquireLock(p, 5000);
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed < 1000, `reclaim took too long: ${elapsed}ms (want promptly, well under 1s)`);
+    releaseLock(lock);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
