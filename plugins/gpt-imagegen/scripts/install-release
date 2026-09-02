@@ -1,0 +1,158 @@
+#!/bin/sh
+# Downloads a released gpt-imagegen binary for the current platform,
+# verifies its SHA256 checksum against the SAME release's SHA256SUMS asset,
+# and installs it to ~/.gpt-imagegen/bin/gpt-imagegen.
+#
+# This script is the one place in the plugin allowed to touch the network to
+# fetch a binary. The launcher shim (scripts/gpt-imagegen) never does that —
+# see its header comment — because it runs on every invocation, including
+# unattended mid-generation, and a network fetch there would put GitHub
+# availability and silent code execution on the hot path. Installation is a
+# separate, explicit, user-present step; this script is that step.
+#
+# The checksum verification below is the entire justification for
+# downloading automatically instead of sending the user to a browser (a
+# browser download picks up macOS's com.apple.quarantine attribute and gets
+# blocked by Gatekeeper; curl does not set that attribute). It is not
+# skippable.
+#
+# Usage:
+#   install-release            # install the latest release
+#   install-release v0.1.0     # pin to a specific tag
+set -eu
+
+REPO="HelicopterHelicopter/gpt-imagegen-plugin"
+INSTALL_DIR="$HOME/.gpt-imagegen/bin"
+INSTALL_PATH="$INSTALL_DIR/gpt-imagegen"
+SUPPORTED="darwin/arm64 darwin/amd64 linux/amd64"
+
+tag="${1:-}"
+
+log() { printf '%s\n' "$*" >&2; }
+die() { log "install-release: $*"; exit 1; }
+
+command -v curl >/dev/null 2>&1 || die "curl is required but was not found"
+
+# --- Platform detection ----------------------------------------------------
+# GPT_IMAGEGEN_INSTALL_UNAME_S/_M override uname's output. They exist only
+# so the unsupported-platform path can be exercised in tests without a
+# machine of that architecture; real installs never need to set them.
+uname_s="${GPT_IMAGEGEN_INSTALL_UNAME_S:-$(uname -s)}"
+uname_m="${GPT_IMAGEGEN_INSTALL_UNAME_M:-$(uname -m)}"
+
+case "$uname_s" in
+  Darwin) os=darwin ;;
+  Linux) os=linux ;;
+  *) os="unsupported-$uname_s" ;;
+esac
+
+case "$uname_m" in
+  arm64 | aarch64) arch=arm64 ;;
+  x86_64 | amd64) arch=amd64 ;;
+  *) arch="unsupported-$uname_m" ;;
+esac
+
+pair="$os/$arch"
+is_supported=no
+for p in $SUPPORTED; do
+  if [ "$p" = "$pair" ]; then
+    is_supported=yes
+  fi
+done
+
+if [ "$is_supported" != yes ]; then
+  display=$(printf '%s' "$SUPPORTED" | sed 's/ /, /g')
+  die "unsupported platform '$uname_s/$uname_m' (mapped to '$pair'). Published binaries cover: $display. Build from source instead: run \`make build\` (requires Go) from a checkout of $REPO."
+fi
+
+asset="gpt-imagegen_${os}_${arch}"
+
+# --- Resolve URLs ------------------------------------------------------------
+if [ -n "$tag" ]; then
+  base="https://github.com/$REPO/releases/download/$tag"
+  resolved_tag="$tag"
+else
+  base="https://github.com/$REPO/releases/latest/download"
+  resolved_tag=""
+fi
+
+# GPT_IMAGEGEN_INSTALL_*_URL let a test point at a local/corrupted release
+# without touching this script or the network; unset for a normal install.
+binary_url="${GPT_IMAGEGEN_INSTALL_BINARY_URL:-$base/$asset}"
+sums_url="${GPT_IMAGEGEN_INSTALL_SUMS_URL:-$base/SHA256SUMS}"
+
+# --- Download to a temp dir, never straight to the destination -------------
+workdir="$(mktemp -d "${TMPDIR:-/tmp}/gpt-imagegen-install.XXXXXX")"
+trap 'rm -rf "$workdir"' EXIT
+
+asset_path="$workdir/$asset"
+sums_path="$workdir/SHA256SUMS"
+
+log "install-release: downloading $asset ..."
+curl -fsSL -o "$asset_path" "$binary_url" || die "download failed: $binary_url"
+
+log "install-release: downloading SHA256SUMS ..."
+curl -fsSL -o "$sums_path" "$sums_url" || die "download failed: $sums_url"
+
+if [ -z "$resolved_tag" ]; then
+  # Best-effort, purely for the confirmation message: a HEAD request against
+  # the "latest" alias 302s to the tag-specific /releases/download/<tag>/...
+  # URL before GitHub's CDN redirect takes over, so one un-followed request
+  # is enough to read the tag back out of the Location header. Any failure
+  # here just falls back to the literal word "latest".
+  resolved_tag="$(curl -fsSI "https://github.com/$REPO/releases/latest/download/$asset" 2>/dev/null \
+    | tr -d '\r' \
+    | awk 'tolower($1) == "location:" {print $2}' \
+    | sed -n 's#.*/releases/download/\([^/]*\)/.*#\1#p')"
+  [ -n "$resolved_tag" ] || resolved_tag="latest"
+fi
+
+# --- Verify checksum: this is the whole point of this script ---------------
+expected_line="$(grep -E "[[:space:]]${asset}\$" "$sums_path" || true)"
+if [ -z "$expected_line" ]; then
+  die "no checksum entry for $asset in SHA256SUMS ($sums_url)"
+fi
+expected_hash="$(printf '%s' "$expected_line" | awk '{print $1}')"
+
+if [ "$os" = darwin ] && command -v shasum >/dev/null 2>&1; then
+  actual_hash="$(shasum -a 256 "$asset_path" | awk '{print $1}')"
+elif command -v sha256sum >/dev/null 2>&1; then
+  actual_hash="$(sha256sum "$asset_path" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  actual_hash="$(shasum -a 256 "$asset_path" | awk '{print $1}')"
+else
+  die "no SHA256 tool found (need shasum or sha256sum)"
+fi
+
+if [ "$expected_hash" != "$actual_hash" ]; then
+  log "install-release: CHECKSUM MISMATCH for $asset -- refusing to install"
+  log "  expected: $expected_hash"
+  log "  actual:   $actual_hash"
+  rm -f "$asset_path"
+  die "checksum verification failed"
+fi
+log "install-release: checksum ok ($actual_hash)"
+
+# --- Install -----------------------------------------------------------------
+mkdir -p "$INSTALL_DIR"
+chmod 700 "$INSTALL_DIR"
+cp "$asset_path" "$INSTALL_PATH"
+chmod +x "$INSTALL_PATH"
+
+# Best-effort: harmless if xattr doesn't exist (non-macOS) or the attribute
+# was never set (a curl download never acquires it in the first place).
+if command -v xattr >/dev/null 2>&1; then
+  xattr -d com.apple.quarantine "$INSTALL_PATH" >/dev/null 2>&1 || true
+fi
+
+# --- Verify it actually runs -------------------------------------------------
+check_out="$("$INSTALL_PATH" wat 2>/dev/null)" || true
+case "$check_out" in
+  *'"ok"'*) : ;;
+  *)
+    die "installed binary at $INSTALL_PATH did not emit JSON when run; it may be for the wrong platform or truncated (got: '$check_out')"
+    ;;
+esac
+log "install-release: installed binary runs and emits JSON"
+
+printf 'installed %s (%s) to %s\n' "$asset" "$resolved_tag" "$INSTALL_PATH"

@@ -14,9 +14,9 @@ auto-triggering skill, and slash commands.
   directly; it never uses an API key). Chromium, Brave and Edge also work in
   practice, since `ChromePath` searches for those too, but Chrome is what has
   actually been tested.
-- Either a **prebuilt release binary** for your platform, or **Go 1.27** to
-  build one yourself. The plugin's shell shim never downloads a binary on its
-  own — you choose one of the two paths below.
+- The `gpt-imagegen` binary itself, by one of the three paths below. The
+  plugin's shell shim never downloads a binary on its own — installation is
+  a separate, explicit step you take once.
 
 ## Installing as a Claude Code plugin
 
@@ -27,8 +27,27 @@ Add this repo as a marketplace and install the plugin:
 /plugin install gpt-imagegen@gpt-imagegen
 ```
 
-Then provide the `gpt-imagegen` binary itself, by whichever of these two
-paths is more convenient:
+Then provide the `gpt-imagegen` binary itself. In order of preference:
+
+- **Checksum-verified install script (recommended):**
+
+  ```bash
+  make install-release
+  # or pin a specific release:
+  make install-release TAG=v0.1.0
+  # equivalently, run the script directly:
+  ./plugins/gpt-imagegen/scripts/install-release [tag]
+  ```
+
+  This downloads the release binary for your platform from this repo's
+  [Releases page][releases] with `curl`, verifies its SHA-256 checksum
+  against the release's own `SHA256SUMS` file, and installs it to
+  `~/.gpt-imagegen/bin/gpt-imagegen`. It refuses to install anything whose
+  checksum doesn't match, and it never installs straight to the destination
+  path — a failed or tampered download can't leave a half-installed binary
+  behind. Supported platforms: `darwin/arm64`, `darwin/amd64`,
+  `linux/amd64`. On anything else it fails with that list and points you at
+  building from source instead.
 
 - **Build from source** (requires Go 1.27):
 
@@ -38,18 +57,29 @@ paths is more convenient:
 
   This builds to `plugins/gpt-imagegen/bin/gpt-imagegen`, which is not
   committed to git — `make build` (or `make clean` to remove it) is the only
-  way to produce or remove it locally.
+  way to produce or remove it locally. `make install-local` copies that
+  build to `~/.gpt-imagegen/bin/`, the same place `install-release` installs
+  to, for a binary you built yourself.
 
-- **Download a release binary** for your platform from this repo's Releases
-  page and place it at `~/.gpt-imagegen/bin/gpt-imagegen` (`chmod +x` it).
-  `make install-local` does the equivalent for a binary you built yourself,
-  copying it from `plugins/gpt-imagegen/bin/` to that same location.
+- **Manual browser download (fallback):** download a release binary for
+  your platform from this repo's [Releases page][releases] and place it at
+  `~/.gpt-imagegen/bin/gpt-imagegen` (`chmod +x` it). This works, but on
+  macOS a browser-downloaded file is tagged with the
+  `com.apple.quarantine` extended attribute, and Gatekeeper will refuse to
+  run it until that attribute is cleared (e.g. `xattr -d
+  com.apple.quarantine ~/.gpt-imagegen/bin/gpt-imagegen`) or you approve it
+  through System Settings. `curl` — what `install-release` uses — does not
+  set that attribute, which is the main reason the script exists instead of
+  just linking to this page.
+
+[releases]: https://github.com/HelicopterHelicopter/gpt-imagegen-plugin/releases
 
 The launcher shim (`plugins/gpt-imagegen/scripts/gpt-imagegen`) looks for the
 binary in this order: `$GPT_IMAGEGEN_BIN` if set, then the local build at
 `plugins/gpt-imagegen/bin/`, then `~/.gpt-imagegen/bin/`. If none exist, it
 prints one line of JSON with `error.code: "BINARY_MISSING"` telling you to do
-one of the above — it never fetches anything itself.
+one of the above — it never fetches anything itself, on this or any other
+invocation.
 
 Verify the install:
 
@@ -180,9 +210,10 @@ absent, and the run still reports the miss.
 ## Development
 
 ```bash
-make build         # build the binary into plugins/gpt-imagegen/bin/
-make test          # go test ./...
-make smoke         # opt-in live smoke test; costs a real ChatGPT turn (~40s)
-make install-local # copy the built binary to ~/.gpt-imagegen/bin/
-make clean         # remove build output
+make build           # build the binary into plugins/gpt-imagegen/bin/
+make test            # go test ./...
+make smoke           # opt-in live smoke test; costs a real ChatGPT turn (~40s)
+make install-local   # copy the built binary to ~/.gpt-imagegen/bin/
+make install-release # download + checksum-verify a release binary to ~/.gpt-imagegen/bin/
+make clean           # remove build output
 ```
