@@ -41,7 +41,7 @@ jobs:
           chmod +x "dist/$name"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v8
+        uses: actions/upload-artifact@v7
         with:
           name: gpt-imagegen_${{ matrix.goos }}_${{ matrix.goarch }}
           path: dist/gpt-imagegen_${{ matrix.goos }}_${{ matrix.goarch }}
@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v7
         with:
           path: dist
 
