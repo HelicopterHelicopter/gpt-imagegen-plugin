@@ -1,0 +1,29 @@
+{
+  "composer_input": [
+    { "css": "#prompt-textarea" },
+    { "testid": "prompt-textarea" },
+    { "css": "div[contenteditable='true']" }
+  ],
+  "loading_state": [
+    { "css": "[data-testid^='image-gen-loading-state']" },
+    { "testid": "image-gen-loading-state" },
+    { "testid": "image-gen-loading-state-frame" }
+  ],
+  "stop_button": [
+    { "testid": "stop-button" }
+  ],
+  "upload_input": [
+    { "testid": "upload-photos-input" },
+    { "css": "input[type='file']" }
+  ],
+  "generated_image": [
+    { "css": "img[alt^='Generated image: ']" }
+  ],
+  "conversation_options": [
+    { "testid": "conversation-options-button" }
+  ],
+  "attachment_remove": [
+    { "css": "button[aria-label*='Remove' i]" },
+    { "testid": "attachment-remove-button" }
+  ]
+}
