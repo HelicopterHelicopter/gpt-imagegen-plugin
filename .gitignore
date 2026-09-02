@@ -4,3 +4,4 @@ out/
 dist/
 plugins/gpt-imagegen/bin/
 .superpowers/
+node_modules/

@@ -1,0 +1,29 @@
+{
+  "name": "gpt-imagegen",
+  "version": "0.2.0",
+  "description": "Generate and edit images by driving a signed-in ChatGPT browser session with a real (visible, on first sign-in) Chrome instance. Images are billed against the user's ChatGPT plan, not an API key.",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HelicopterHelicopter/gpt-imagegen-plugin.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/HelicopterHelicopter/gpt-imagegen-plugin/issues"
+  },
+  "homepage": "https://github.com/HelicopterHelicopter/gpt-imagegen-plugin#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "puppeteer-core": "^25.9.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}
