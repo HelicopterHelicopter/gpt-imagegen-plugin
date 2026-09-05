@@ -4,19 +4,20 @@ Generate and edit images by driving a signed-in ChatGPT browser session with a
 real (visible, on first sign-in) Chrome instance. Images are billed against
 the user's ChatGPT plan, not an API key.
 
-This repo is both a standalone Go CLI (`cmd/gpt-imagegen`) and a Claude Code
-plugin (`plugins/gpt-imagegen`) that wraps that CLI with a launcher shim, an
-auto-triggering skill, and slash commands.
+This repo is a Node CLI (`src/`, bundled into the single committed file
+`dist/index.cjs`) and a Claude Code plugin (`plugins/gpt-imagegen`) that
+wraps that bundle with a launcher shim, an auto-triggering skill, and slash
+commands.
 
 ## Requirements
 
+- **Node.js 20 or later.** Nothing else needs installing — the plugin ships
+  its own dependencies bundled into `dist/index.cjs`, so there is no
+  `npm install` step for an end user.
 - **Google Chrome**, signed in to ChatGPT (the plugin drives that session
   directly; it never uses an API key). Chromium, Brave and Edge also work in
-  practice, since `ChromePath` searches for those too, but Chrome is what has
-  actually been tested.
-- The `gpt-imagegen` binary itself, by one of the three paths below. The
-  plugin's shell shim never downloads a binary on its own — installation is
-  a separate, explicit step you take once.
+  practice, since `chromePath()` searches for those too, but Chrome is what
+  has actually been tested.
 
 ## Installing as a Claude Code plugin
 
@@ -27,59 +28,11 @@ Add this repo as a marketplace and install the plugin:
 /plugin install gpt-imagegen@gpt-imagegen
 ```
 
-Then provide the `gpt-imagegen` binary itself. In order of preference:
-
-- **Checksum-verified install script (recommended):**
-
-  ```bash
-  make install-release
-  # or pin a specific release:
-  make install-release TAG=v0.1.0
-  # equivalently, run the script directly:
-  ./plugins/gpt-imagegen/scripts/install-release [tag]
-  ```
-
-  This downloads the release binary for your platform from this repo's
-  [Releases page][releases] with `curl`, verifies its SHA-256 checksum
-  against the release's own `SHA256SUMS` file, and installs it to
-  `~/.gpt-imagegen/bin/gpt-imagegen`. It refuses to install anything whose
-  checksum doesn't match, and it never installs straight to the destination
-  path — a failed or tampered download can't leave a half-installed binary
-  behind. Supported platforms: `darwin/arm64`, `darwin/amd64`,
-  `linux/amd64`. On anything else it fails with that list and points you at
-  building from source instead.
-
-- **Build from source** (requires Go 1.27):
-
-  ```bash
-  make build
-  ```
-
-  This builds to `plugins/gpt-imagegen/bin/gpt-imagegen`, which is not
-  committed to git — `make build` (or `make clean` to remove it) is the only
-  way to produce or remove it locally. `make install-local` copies that
-  build to `~/.gpt-imagegen/bin/`, the same place `install-release` installs
-  to, for a binary you built yourself.
-
-- **Manual browser download (fallback):** download a release binary for
-  your platform from this repo's [Releases page][releases] and place it at
-  `~/.gpt-imagegen/bin/gpt-imagegen` (`chmod +x` it). This works, but on
-  macOS a browser-downloaded file is tagged with the
-  `com.apple.quarantine` extended attribute, and Gatekeeper will refuse to
-  run it until that attribute is cleared (e.g. `xattr -d
-  com.apple.quarantine ~/.gpt-imagegen/bin/gpt-imagegen`) or you approve it
-  through System Settings. `curl` — what `install-release` uses — does not
-  set that attribute, which is the main reason the script exists instead of
-  just linking to this page.
-
-[releases]: https://github.com/HelicopterHelicopter/gpt-imagegen-plugin/releases
-
-The launcher shim (`plugins/gpt-imagegen/scripts/gpt-imagegen`) looks for the
-binary in this order: `$GPT_IMAGEGEN_BIN` if set, then the local build at
-`plugins/gpt-imagegen/bin/`, then `~/.gpt-imagegen/bin/`. If none exist, it
-prints one line of JSON with `error.code: "BINARY_MISSING"` telling you to do
-one of the above — it never fetches anything itself, on this or any other
-invocation.
+That's it — there is no build step and no binary to download. The plugin's
+launcher shim (`plugins/gpt-imagegen/scripts/gpt-imagegen`) execs `node` on
+the committed `dist/index.cjs` bundle directly. If `node` isn't on `PATH`,
+the shim prints one line of JSON with `error.code: "NODE_MISSING"` instead
+of failing silently.
 
 Verify the install:
 
@@ -89,19 +42,20 @@ Verify the install:
 
 ## Platform support
 
-**macOS is the only platform this plugin has actually been tested on.**
-Linux release binaries are built by CI and Chrome discovery (`ChromePath`)
-does search the usual Linux install locations (`/usr/bin/google-chrome`,
-`/usr/bin/chromium`, `$PATH`, and so on), but the plugin has not been run
-end-to-end against a real ChatGPT session on Linux — treat it as untested,
-not unsupported.
+**macOS is the only platform this plugin has actually been tested on,
+end to end, against a real ChatGPT session.** Being plain Node + Chrome
+automation (no compiled, per-platform binary) makes Linux plausible —
+`chromePath()` does search the usual Linux install locations
+(`/usr/bin/google-chrome`, `/usr/bin/chromium`, `$PATH`, and so on) — but
+nobody has actually run this plugin on Linux. Treat it as untested, not
+unsupported or supported.
 
 One concrete behavioural difference: hiding the automation window off-screen
 during `generate`/`edit`/`probe` is implemented via AppleScript and is
-macOS-only (`internal/session/window_darwin.go`). On every other platform
-(`internal/session/window_other.go`) that window stays visible while a
-generation runs, since there is no offscreen-positioning implementation for
-it yet.
+macOS-only (see `hideWindow` in `src/window.js`). On every other platform
+that function is a no-op and the window stays visible for the duration of a
+run, since there is no offscreen-positioning implementation for anything
+other than macOS yet.
 
 ## CLI surface
 
@@ -113,7 +67,7 @@ gpt-imagegen edit --image <path> --prompt "<text>" --out <path>
 gpt-imagegen probe --stage <name>
 ```
 
-stdout is always exactly one line of JSON (see `internal/envelope`); all
+stdout is always exactly one line of JSON (see `src/envelope.js`); all
 progress and warnings are written to stderr. Callers must parse stdout and
 branch on `error.code`, never on message text.
 
@@ -147,11 +101,12 @@ absent, and the run still reports the miss.
 
 ## Known limitations
 
-- **Not tested on Linux.** See Platform support above: Linux binaries build
-  and Chrome discovery covers Linux install paths, but nobody has run a real
-  generation against ChatGPT on Linux yet. The offscreen window-hiding used
-  during `generate`/`edit`/`probe` is also macOS-only; on Linux the
-  automation window stays visible for the duration of a run.
+- **Not tested on Linux.** See Platform support above: Node + Chrome makes
+  Linux plausible, and Chrome discovery covers Linux install paths, but
+  nobody has run a real generation against ChatGPT on Linux yet. The
+  offscreen window-hiding used during `generate`/`edit`/`probe` is also
+  macOS-only; on Linux the automation window stays visible for the duration
+  of a run.
 
 - **`RATE_LIMITED` and `CHALLENGE` are declared in the JSON error contract
   but are not emitted by any code path today.** Detection for these two was
@@ -186,11 +141,11 @@ absent, and the run still reports the miss.
 - **Selector self-heal is user-scoped, hand-written, and per-key
   destructive.** The override file at `~/.gpt-imagegen/selectors.json` is
   written by the skill itself, by hand — nothing in the CLI writes it.
-  (`selectors.Patch` and `selectors.Save` exist as a library surface for
+  (`patch` and `save` in `src/selectors.js` exist as a library surface for
   building such a file programmatically, but no production code path calls
   either; they are exercised only by tests.)
 
-  `selectors.Load` merges that file over the embedded defaults **per key,
+  `load` merges that file over the embedded defaults **per key,
   wholesale**: a key present in the user file replaces that key's entire
   candidate list rather than prepending to it. That is intentional — it is
   the only way to retire a shipped candidate that now matches the wrong
@@ -203,17 +158,22 @@ absent, and the run still reports the miss.
      key.
 
   `SKILL.md` carries both rules with a worked before/after example, and
-  `TestUserOverrideReplacesTheWholeKey` pins the behaviour. Deleting the file
-  restores the shipped defaults. Self-heal is also exactly-once: one patch,
-  one re-run, then stop; there is no retry loop anywhere in this codebase.
+  `test/selectors.test.js`'s `'user override replaces the whole key,
+  wholesale'` test pins the behaviour. Deleting the file restores the
+  shipped defaults. Self-heal is also exactly-once: one patch, one re-run,
+  then stop; there is no retry loop anywhere in this codebase.
 
 ## Development
 
 ```bash
-make build           # build the binary into plugins/gpt-imagegen/bin/
-make test            # go test ./...
-make smoke           # opt-in live smoke test; costs a real ChatGPT turn (~40s)
-make install-local   # copy the built binary to ~/.gpt-imagegen/bin/
-make install-release # download + checksum-verify a release binary to ~/.gpt-imagegen/bin/
-make clean           # remove build output
+npm test           # node --test test/
+make bundle        # rebuild dist/index.cjs from src/ (commit the result)
+make bundle-check  # rebuild and fail if dist/ doesn't match what's committed
+make smoke         # opt-in live smoke test; costs a real ChatGPT turn (~40s)
 ```
+
+`dist/index.cjs` is committed to git and is what the plugin actually runs
+(via `plugins/gpt-imagegen/scripts/gpt-imagegen`). Whenever you change
+anything under `src/`, run `make bundle` and commit the updated
+`dist/index.cjs` in the same change — CI's `make bundle-check` fails the
+build otherwise.

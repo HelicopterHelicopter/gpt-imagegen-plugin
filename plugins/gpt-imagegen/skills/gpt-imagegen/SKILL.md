@@ -92,8 +92,8 @@ Branch on `error.code`. Never invent a retry that is not listed here.
 | `SELECTOR_MISS` | One self-heal attempt, below. |
 | `NO_IMAGE_RETURNED` or `REFUSED` | Report it. Likely a model refusal, not a bug. |
 | `PROFILE_LOCKED` | Another session holds the browser. Report and stop. |
-| `CHROME_MISSING` | Tell the user to install Chrome or run `make build`. |
-| `BINARY_MISSING` | The `gpt-imagegen` binary itself was not found. Offer, once, to run `${CLAUDE_PLUGIN_ROOT}/scripts/install-release`: say that it downloads the release binary for this platform from this repo's GitHub releases, verifies its SHA-256 checksum, and installs it to `~/.gpt-imagegen/bin/`. Get the user's go-ahead before running it — never run it silently. If they'd rather build from source, mention `make build` as the alternative. Do not retry, and do not offer a second time for the same failure. |
+| `CHROME_MISSING` | Tell the user to install Google Chrome. |
+| `NODE_MISSING` | Emitted by the launcher shim itself, before the CLI even starts, when `node` isn't on `PATH`. Tell the user to install Node.js 20+. |
 
 **Known limitation: `RATE_LIMITED` and `CHALLENGE` are not currently
 detected by any code path.** They are part of the JSON contract (a future
@@ -142,9 +142,9 @@ On `SELECTOR_MISS`:
      failure. Always repeat the shipped candidates behind your new one.
 
    The shipped candidates for a key are in the plugin's own data file at
-   `${CLAUDE_PLUGIN_ROOT}/../../internal/selectors/selectors.json`. Read the
-   key from there (and from the user file, if it already has that key) and
-   carry every candidate through.
+   `${CLAUDE_PLUGIN_ROOT}/../../src/selectors.json`. Read the key from there
+   (and from the user file, if it already has that key) and carry every
+   candidate through.
 
    Concrete example. `composer_input` ships as:
 

@@ -1,26 +1,24 @@
 #!/usr/bin/env bash
-# Locate the plugin binary and exec it. Resolution order:
-#   1. $GPT_IMAGEGEN_BIN, if set and executable.
-#   2. The local build at ../bin/gpt-imagegen (produced by `make build`).
-#   3. ~/.gpt-imagegen/bin/gpt-imagegen (a downloaded release binary, or the
-#      copy `make install-local` puts there).
-# This shim never downloads anything itself. If none of the above exists, it
-# emits exactly one line of JSON with code BINARY_MISSING and exits 1.
+# Launches the bundled CLI. The plugin ships a single self-contained
+# artifact at dist/index.cjs (built by `make bundle` from src/cli.js and
+# committed to git, so a clone needs no `npm install` and there is no
+# separate binary to locate or download). This shim's only job is to find
+# that file relative to its own location and hand off to `node`.
+#
+# There used to be a three-way binary search here ($GPT_IMAGEGEN_BIN, a
+# local Go build, a downloaded release binary) because a compiled
+# per-platform binary could simply be absent. That entire class of failure
+# is gone now that the artifact is JS committed alongside this script, so
+# $GPT_IMAGEGEN_BIN has been dropped rather than repurposed -- there is
+# nothing left to override. The only missing-runtime case that remains is
+# `node` itself not being installed, handled below.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bundle="$here/../../../dist/index.cjs"
 
-bin=""
-if [[ -n "${GPT_IMAGEGEN_BIN:-}" && -x "${GPT_IMAGEGEN_BIN}" ]]; then
-  bin="$GPT_IMAGEGEN_BIN"
-elif [[ -x "$here/../bin/gpt-imagegen" ]]; then
-  bin="$here/../bin/gpt-imagegen"
-elif [[ -x "$HOME/.gpt-imagegen/bin/gpt-imagegen" ]]; then
-  bin="$HOME/.gpt-imagegen/bin/gpt-imagegen"
-fi
-
-if [[ -z "$bin" ]]; then
-  echo '{"ok":false,"error":{"code":"BINARY_MISSING","message":"gpt-imagegen binary not found. Build it from source with `make build`, or download the release binary for your platform and place it at ~/.gpt-imagegen/bin/gpt-imagegen."}}'
+if ! command -v node >/dev/null 2>&1; then
+  echo '{"ok":false,"error":{"code":"NODE_MISSING","message":"node was not found on PATH. Install Node.js 20 or later (see https://nodejs.org) and try again."}}'
   exit 1
 fi
 
-exec "$bin" "$@"
+exec node "$bundle" "$@"
