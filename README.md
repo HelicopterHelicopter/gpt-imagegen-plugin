@@ -166,7 +166,7 @@ absent, and the run still reports the miss.
 ## Development
 
 ```bash
-npm test           # node --test "test/**/*.test.js"
+npm test           # node --test test/*.test.js
 make bundle        # rebuild dist/index.cjs from src/ (commit the result)
 make bundle-check  # rebuild and fail if dist/ doesn't match what's committed
 make smoke         # opt-in live smoke test; costs a real ChatGPT turn (~40s)

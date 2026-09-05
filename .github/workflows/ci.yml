@@ -44,7 +44,7 @@ jobs:
           # exclusion flag needed. The fixture tests in test/fixtures/ are a
           # different thing: those are offline and safe to run in CI, which
           # is why Chrome is installed above.
-        run: node --test test/
+        run: node --test test/*.test.js
 
       # Fails if dist/index.cjs (committed to git) is out of date with
       # src/. Without this, the committed bundle can silently drift from

@@ -14,7 +14,7 @@ bundle-check: bundle
 	git diff --exit-code dist/
 
 test:
-	node --test "test/**/*.test.js"
+	node --test test/*.test.js
 
 # Live smoke costs a real ChatGPT turn; opt in explicitly.
 smoke:
