@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>fixture: finished two-image conversation</title></head>
+<body>
+  <!--
+  Represents a finished generation where the user asked for a set of two
+  images and both arrived. Distinct from conversation.html (which has a
+  single generated file rendered through two <img> tags): here there are
+  two DIFFERENT underlying files, the first also rendered through two tags
+  the way ChatGPT does it, so AltForID has to find the right alt for the
+  right id rather than trivially returning the only alt on the page.
+  -->
+  <button data-testid="create-new-chat-button">New chat</button>
+
+  <div data-testid="conversation-turn-1">two different images, no text</div>
+
+  <div data-testid="conversation-turn-2">
+    <img alt="Generated image: Geometric Teal Mountain Emblem"
+         src="https://chatgpt.com/backend-api/estuary/content?id=file_00000000e7148208927dc5bbece7a546&ts=1&p=fs&cid=1&sig=abc123&v=0">
+    <!-- Same generated file, second <img> tag; see conversation.html for why
+         this duplicate must carry the same real alt, not an empty one. -->
+    <img alt="Generated image: Geometric Teal Mountain Emblem"
+         src="https://chatgpt.com/backend-api/estuary/content?id=file_00000000e7148208927dc5bbece7a546&ts=2&p=fs&cid=2&sig=def456&v=0">
+    <img alt="Generated image: Sunset Origami Crane"
+         src="https://files.oaiusercontent.com/backend-api/estuary/content?id=file_9f8e7d6c5b4a39281706f5e4d3c2b1a0&ts=3&p=fs&cid=3&sig=ghi789&v=0">
+  </div>
+
+  <button data-testid="conversation-options-button">Options</button>
+
+  <div id="prompt-textarea" contenteditable="true"></div>
+  <input type="file" data-testid="upload-photos-input">
+</body>
+</html>

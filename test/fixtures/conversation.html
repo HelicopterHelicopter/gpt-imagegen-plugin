@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>fixture: finished single-image conversation</title></head>
+<body>
+  <button data-testid="create-new-chat-button">New chat</button>
+
+  <div data-testid="conversation-turn-1">a plain solid teal square, no text</div>
+
+  <div data-testid="conversation-turn-2">
+    <img alt="ChatGPT" src="https://chatgpt.com/cdn/assets/sprites-core-9b910f5e.svg">
+    <img alt="Generated image: Geometric Teal Mountain Emblem"
+         src="https://chatgpt.com/backend-api/estuary/content?id=file_00000000e7148208927dc5bbece7a546&ts=1&p=fs&cid=1&sig=abc123&v=0">
+    <!--
+    ChatGPT renders the same generated file through a second <img> tag (a
+    thumbnail/lightbox pair) carrying the SAME accessible alt text, not an
+    empty one: production's state-reading JS selects on
+    img[alt^="Generated image: "], so a duplicate tag with alt="" would
+    never enter ImageURLs at all and the dedup logic below would never be
+    exercised. This second tag is what DistinctImageIDs must collapse away.
+    -->
+    <img alt="Generated image: Geometric Teal Mountain Emblem"
+         src="https://chatgpt.com/backend-api/estuary/content?id=file_00000000e7148208927dc5bbece7a546&ts=2&p=fs&cid=2&sig=def456&v=0">
+  </div>
+
+  <button data-testid="conversation-options-button">Options</button>
+
+  <div id="prompt-textarea" contenteditable="true"></div>
+  <input type="file" data-testid="upload-photos-input">
+  <button aria-label="Remove attached reference file" data-testid="attachment-remove-button">Remove</button>
+</body>
+</html>
