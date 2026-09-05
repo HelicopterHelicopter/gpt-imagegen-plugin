@@ -202,6 +202,34 @@ async function cmdSetup(stdout, stderr) {
  * of JSON with the usual ok/error keys, so an existing parser reading this
  * line does not have to special-case the command.
  */
+/**
+ * Turns a puppeteer protocol-timeout error into something a user of this
+ * plugin can act on, and leaves every other message alone.
+ *
+ * puppeteer raises "<Method> timed out. Increase the 'protocolTimeout'
+ * setting in launch/connect calls for a higher timeout if needed." That is
+ * addressed to whoever wrote the automation, not to whoever ran it -- there
+ * is no setting a user can reach, and the text names an internal knob as
+ * the remedy. Observed live once inside compose.send(): a single CDP call
+ * stalled for the full cap while the same command succeeded before and
+ * after, so the stall is a transient in Chrome or ChatGPT, not a defect
+ * this code can remove. What it can do is say so plainly.
+ *
+ * The replacement tells the user to run the command again rather than
+ * retrying for them: nothing in this codebase retries a generation.
+ */
+function describeCdpError(message) {
+  const msg = message || '';
+  if (!/Increase the 'protocolTimeout' setting/.test(msg)) {
+    return msg;
+  }
+  const seconds = Math.round(sessionMod.PROTOCOL_TIMEOUT_MS / 1000);
+  return (
+    `ChatGPT stopped responding to the browser (no reply for ${seconds}s). ` +
+    'Nothing was sent twice and nothing was retried -- run the command again.'
+  );
+}
+
 async function cmdSelectors(stdout) {
   const result = envelope.success(null, '', false, 0);
   result.selectors = selectors.shipped();
@@ -328,7 +356,7 @@ async function cmdProbe(args, stdout, stderr) {
       page = await handle.browser.newPage();
       await page.goto('https://chatgpt.com/', { waitUntil: 'load' });
     } catch (err) {
-      return emit(stdout, envelope.failure(envelope.CODES.TIMEOUT, err.message));
+      return emit(stdout, envelope.failure(envelope.CODES.TIMEOUT, describeCdpError(err.message)));
     }
     await sleep(3000);
 
@@ -545,7 +573,7 @@ async function generate(prompt, out, count, refs, stdout, stderr) {
       try {
         page = await handle.browser.newPage();
       } catch (err) {
-        return emit(stdout, envelope.failure(envelope.CODES.TIMEOUT, err.message));
+        return emit(stdout, envelope.failure(envelope.CODES.TIMEOUT, describeCdpError(err.message)));
       }
 
       const rec = capture.createRecorder(page);
@@ -554,7 +582,7 @@ async function generate(prompt, out, count, refs, stdout, stderr) {
       try {
         await compose.newChat(page);
       } catch (err) {
-        return emit(stdout, envelope.failure(envelope.CODES.TIMEOUT, err.message));
+        return emit(stdout, envelope.failure(envelope.CODES.TIMEOUT, describeCdpError(err.message)));
       }
       stderr.write('composer ready; sending prompt\n');
 
@@ -568,7 +596,7 @@ async function generate(prompt, out, count, refs, stdout, stderr) {
         if (err instanceof compose.SelectorMissError) {
           return emit(stdout, await selectorMissResult(page, err, STAGE_COMPOSER));
         }
-        return emit(stdout, envelope.failure(envelope.CODES.TIMEOUT, err.message));
+        return emit(stdout, envelope.failure(envelope.CODES.TIMEOUT, describeCdpError(err.message)));
       }
 
       let convUrl = '';
@@ -752,6 +780,8 @@ module.exports = {
   // no stubs needed) -- see its doc comment for why this is pinned in
   // isolation rather than only exercised indirectly through generate().
   salvageOutcome,
+  // Pure string mapping, exported for direct unit testing.
+  describeCdpError,
   // Test-only seam -- see the `internal` doc comment above. Production code
   // never reads or writes this from outside this module.
   _internal: internal,

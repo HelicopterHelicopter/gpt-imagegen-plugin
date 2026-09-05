@@ -24,6 +24,12 @@ const { fakeInstall, shimIn } = require('./install-helper');
 const LIVE = process.env.GPT_IMAGEGEN_LIVE === '1';
 const skipReason = LIVE ? false : 'set GPT_IMAGEGEN_LIVE=1 to run the live smoke';
 
+// The image the generate smoke produces, handed to the edit smoke below.
+// Chaining beats a committed fixture here: `.gitignore` excludes *.png, the
+// pair mirrors the real workflow (make an image, then change it), and the
+// edit smoke cannot silently pass against a stale or hand-made input.
+let generated = null;
+
 test('generate produces a real image file on disk', { skip: skipReason }, (t) => {
   const shim = shimIn(fakeInstall(t));
   if (!fs.existsSync(shim)) {
@@ -60,4 +66,48 @@ test('generate produces a real image file on disk', { skip: skipReason }, (t) =>
   // merely that the process exited 0 and printed the right shape of JSON.
   const stat = fs.statSync(result.images[0].path);
   assert.ok(stat.size >= 1000, `no real image written: ${result.images[0].path} is only ${stat.size} bytes`);
+
+  generated = result.images[0].path;
+});
+
+test('edit attaches a reference image and returns a changed one', { skip: skipReason }, (t) => {
+  // Costs a second real turn, which is why it is opt-in with the rest of the
+  // smoke. It earns that: `edit` is the only path that uploads a file, so
+  // the attachment selectors and waitAttachmentsReady() -- an entire code
+  // path and selector key -- have no other live coverage. `generate` never
+  // touches any of it.
+  if (!generated || !fs.existsSync(generated)) {
+    t.skip('generate smoke did not produce an input image');
+    return;
+  }
+
+  const shim = shimIn(fakeInstall(t));
+  const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'gpt-imagegen-live-')), 'edited.png');
+
+  let stdout;
+  try {
+    stdout = execFileSync(
+      shim,
+      ['edit', '--image', generated, '--prompt', 'change the square to bright orange', '--out', out],
+      { encoding: 'utf8' }
+    );
+  } catch (err) {
+    assert.fail(
+      `edit failed: ${err.message}\nstdout=${err.stdout || ''}\nstderr=${err.stderr || ''}`
+    );
+  }
+
+  const result = JSON.parse(stdout);
+  assert.equal(result.ok, true, `unexpected result: ${stdout}`);
+  assert.equal(result.images && result.images.length, 1, `unexpected result: ${stdout}`);
+
+  const stat = fs.statSync(result.images[0].path);
+  assert.ok(stat.size >= 1000, `no real image written: ${result.images[0].path} is only ${stat.size} bytes`);
+
+  // Dimensions come from parsing the file's own header, so a non-zero pair
+  // also confirms the bytes on disk are a real, decodable image.
+  assert.ok(
+    result.images[0].width > 0 && result.images[0].height > 0,
+    `edited image has no dimensions: ${stdout}`
+  );
 });

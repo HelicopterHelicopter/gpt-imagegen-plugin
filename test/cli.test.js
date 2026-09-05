@@ -598,3 +598,29 @@ test('every other command is still rejected the same way', async () => {
   await run(['selector'], stdout, stderr); // near-miss, not the real command
   assert.equal(assertSingleJsonLine(stdout.toString()).error.code, 'REFUSED');
 });
+
+// --- CDP protocol-timeout message ---------------------------------------
+
+test('a puppeteer protocol timeout becomes something a user can act on', () => {
+  // Observed live: a single CDP call stalled inside compose.send() and
+  // puppeteer's own text reached the envelope verbatim, telling the user to
+  // "Increase the 'protocolTimeout' setting in launch/connect calls" -- a
+  // setting no user of this plugin can reach. The stall itself is a
+  // transient in Chrome/ChatGPT and is not something this code can prevent;
+  // reporting it honestly is.
+  const raw =
+    "Runtime.callFunctionOn timed out. Increase the 'protocolTimeout' " +
+    'setting in launch/connect calls for a higher timeout if needed.';
+  const msg = cli.describeCdpError(raw);
+  assert.ok(!/protocolTimeout/.test(msg), `leaked puppeteer internals: ${msg}`);
+  assert.ok(!/launch\/connect/.test(msg), `leaked puppeteer internals: ${msg}`);
+  assert.match(msg, /stopped responding/i);
+  // No-retry discipline: tell the user to re-run, never retry for them.
+  assert.match(msg, /run .*again|re-?run/i);
+});
+
+test('an unrelated error message is passed through untouched', () => {
+  assert.equal(cli.describeCdpError('attach refs: no such file'), 'attach refs: no such file');
+  assert.equal(cli.describeCdpError(''), '');
+  assert.equal(cli.describeCdpError(undefined), '');
+});

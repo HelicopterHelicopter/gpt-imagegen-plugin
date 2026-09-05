@@ -58937,6 +58937,7 @@ var require_session = __commonJS({
     function sleep(ms) {
       return new Promise((resolve7) => setTimeout(resolve7, ms));
     }
+    var PROTOCOL_TIMEOUT_MS = 18e4;
     function launchOptions({ headless, userDataDir, executablePath: executablePath2 }) {
       if (typeof userDataDir !== "string" || userDataDir.length === 0) {
         throw new Error("launchOptions requires a non-empty userDataDir");
@@ -58953,7 +58954,8 @@ var require_session = __commonJS({
         // puppeteer adds --enable-automation by default; that flag is exactly
         // what tips ChatGPT off, so it is stripped here rather than trusting
         // any inferred default.
-        ignoreDefaultArgs: ["--enable-automation"]
+        ignoreDefaultArgs: ["--enable-automation"],
+        protocolTimeout: PROTOCOL_TIMEOUT_MS
       };
     }
     async function open3({ headless, hideWindow }, deps = {}) {
@@ -58968,7 +58970,10 @@ var require_session = __commonJS({
       if (endpoint) {
         let browser2;
         try {
-          browser2 = await puppeteerImpl.connect({ browserURL: endpoint.browserURL });
+          browser2 = await puppeteerImpl.connect({
+            browserURL: endpoint.browserURL,
+            protocolTimeout: PROTOCOL_TIMEOUT_MS
+          });
         } catch {
           browser2 = void 0;
         }
@@ -59040,6 +59045,7 @@ var require_session = __commonJS({
       }
     }
     module2.exports = {
+      PROTOCOL_TIMEOUT_MS,
       chromePath,
       parseDevToolsActivePort,
       endpointFromProfile,
@@ -59765,6 +59771,14 @@ var require_cli = __commonJS({
         await safeCleanup("closeSession", () => internal.closeSession(handle), stderr);
       }
     }
+    function describeCdpError(message) {
+      const msg = message || "";
+      if (!/Increase the 'protocolTimeout' setting/.test(msg)) {
+        return msg;
+      }
+      const seconds = Math.round(sessionMod.PROTOCOL_TIMEOUT_MS / 1e3);
+      return `ChatGPT stopped responding to the browser (no reply for ${seconds}s). Nothing was sent twice and nothing was retried -- run the command again.`;
+    }
     async function cmdSelectors(stdout) {
       const result = envelope.success(null, "", false, 0);
       result.selectors = selectors.shipped();
@@ -59880,7 +59894,7 @@ var require_cli = __commonJS({
           page = await handle.browser.newPage();
           await page.goto("https://chatgpt.com/", { waitUntil: "load" });
         } catch (err) {
-          return emit(stdout, envelope.failure(envelope.CODES.TIMEOUT, err.message));
+          return emit(stdout, envelope.failure(envelope.CODES.TIMEOUT, describeCdpError(err.message)));
         }
         await sleep(3e3);
         let probePath;
@@ -60011,14 +60025,14 @@ var require_cli = __commonJS({
           try {
             page = await handle.browser.newPage();
           } catch (err) {
-            return emit(stdout, envelope.failure(envelope.CODES.TIMEOUT, err.message));
+            return emit(stdout, envelope.failure(envelope.CODES.TIMEOUT, describeCdpError(err.message)));
           }
           const rec = capture.createRecorder(page);
           rec.start();
           try {
             await compose.newChat(page);
           } catch (err) {
-            return emit(stdout, envelope.failure(envelope.CODES.TIMEOUT, err.message));
+            return emit(stdout, envelope.failure(envelope.CODES.TIMEOUT, describeCdpError(err.message)));
           }
           stderr.write("composer ready; sending prompt\n");
           try {
@@ -60027,7 +60041,7 @@ var require_cli = __commonJS({
             if (err instanceof compose.SelectorMissError) {
               return emit(stdout, await selectorMissResult(page, err, STAGE_COMPOSER));
             }
-            return emit(stdout, envelope.failure(envelope.CODES.TIMEOUT, err.message));
+            return emit(stdout, envelope.failure(envelope.CODES.TIMEOUT, describeCdpError(err.message)));
           }
           let convUrl = "";
           try {
@@ -60160,6 +60174,8 @@ var require_cli = __commonJS({
       // no stubs needed) -- see its doc comment for why this is pinned in
       // isolation rather than only exercised indirectly through generate().
       salvageOutcome,
+      // Pure string mapping, exported for direct unit testing.
+      describeCdpError,
       // Test-only seam -- see the `internal` doc comment above. Production code
       // never reads or writes this from outside this module.
       _internal: internal

@@ -257,6 +257,17 @@ function sleep(ms) {
  * this file. Never call puppeteer.launch() with an options object built any
  * other way.
  */
+/**
+ * The cap puppeteer puts on every single CDP command (Connection.js applies
+ * `timeout ?? 180_000`). Set explicitly rather than inherited so the cap is
+ * visible at the call site: it is not a budget for a whole generation --
+ * every wait in this codebase is a Node-side polling loop of short calls --
+ * but it is what a single stalled call costs before it fails, and the text
+ * puppeteer raises when it does is rewritten before a user ever sees it
+ * (see describeCdpError in cli.js).
+ */
+const PROTOCOL_TIMEOUT_MS = 180000;
+
 function launchOptions({ headless, userDataDir, executablePath }) {
   if (typeof userDataDir !== 'string' || userDataDir.length === 0) {
     throw new Error('launchOptions requires a non-empty userDataDir');
@@ -274,6 +285,7 @@ function launchOptions({ headless, userDataDir, executablePath }) {
     // what tips ChatGPT off, so it is stripped here rather than trusting
     // any inferred default.
     ignoreDefaultArgs: ['--enable-automation'],
+    protocolTimeout: PROTOCOL_TIMEOUT_MS,
   };
 }
 
@@ -319,7 +331,10 @@ async function open({ headless, hideWindow }, deps = {}) {
       // puppeteer.connect()'s close() sends the CDP `Browser.close` command,
       // which would terminate someone else's Chrome -- close() below must
       // never call it for an attached handle. See close()'s comment.
-      browser = await puppeteerImpl.connect({ browserURL: endpoint.browserURL });
+      browser = await puppeteerImpl.connect({
+        browserURL: endpoint.browserURL,
+        protocolTimeout: PROTOCOL_TIMEOUT_MS,
+      });
     } catch {
       browser = undefined;
       // Endpoint claimed to be live but connect failed anyway; fall through
@@ -454,6 +469,7 @@ async function auth(handle) {
 }
 
 module.exports = {
+  PROTOCOL_TIMEOUT_MS,
   chromePath,
   parseDevToolsActivePort,
   endpointFromProfile,

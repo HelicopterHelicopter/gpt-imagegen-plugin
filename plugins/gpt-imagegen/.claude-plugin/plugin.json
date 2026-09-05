@@ -1,7 +1,7 @@
 {
   "name": "gpt-imagegen",
   "description": "Generate, edit and set images via a signed-in ChatGPT browser session",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "author": { "name": "jheelr" },
   "license": "MIT",
   "keywords": ["images", "chatgpt", "browser", "generation"]

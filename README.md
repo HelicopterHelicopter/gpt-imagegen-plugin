@@ -117,6 +117,17 @@ absent, and the run still reports the miss.
   macOS-only; on Linux the automation window stays visible for the duration
   of a run.
 
+- **A CDP call can stall, and the run then fails after ~3 minutes.**
+  Observed once, live, inside the reference-image upload in `compose.send()`:
+  a single Chrome DevTools call never returned and hit puppeteer's per-call
+  cap (`protocolTimeout`, 180s, now set explicitly in `launchOptions`). The
+  identical command succeeded immediately before and after, so this is a
+  transient in Chrome or ChatGPT rather than something this code can
+  prevent. It surfaces as `TIMEOUT` with a plain message telling you to run
+  the command again — puppeteer's own text, which advises changing a setting
+  no user of this plugin can reach, is rewritten before it is emitted. The
+  no-retry discipline holds: nothing is retried for you.
+
 - **`RATE_LIMITED` and `CHALLENGE` are declared in the JSON error contract
   but are not emitted by any code path today.** Detection for these two was
   deliberately deferred rather than guessed at, since inventing selectors

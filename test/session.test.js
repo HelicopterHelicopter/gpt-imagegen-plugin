@@ -17,6 +17,7 @@ const {
   close,
   auth,
   parseAuthBody,
+  PROTOCOL_TIMEOUT_MS,
   _internal,
 } = require('../src/session');
 
@@ -678,4 +679,18 @@ test('auth(): a non-JSON body never leaks into the thrown error, and the page is
     }
   );
   assert.equal(closeCalled, true, 'the throwaway auth page must be closed even when parsing fails');
+});
+
+test('launchOptions: the CDP per-call cap is set explicitly, not inherited', () => {
+  // puppeteer applies `timeout ?? 180_000` to every CDP command. Inheriting
+  // that silently means the cap is invisible at the call site and can shift
+  // under a dependency bump; a stalled call is the difference between a
+  // clean failure and a three-minute hang, so the number is stated here.
+  const opts = launchOptions({
+    headless: false,
+    userDataDir: '/tmp/some-profile',
+    executablePath: '/usr/bin/chrome',
+  });
+  assert.equal(opts.protocolTimeout, PROTOCOL_TIMEOUT_MS);
+  assert.ok(PROTOCOL_TIMEOUT_MS > 0);
 });
