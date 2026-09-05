@@ -19,5 +19,10 @@ test:
 	node --test test/*.test.js
 
 # Live smoke costs a real ChatGPT turn; opt in explicitly.
-smoke:
+#
+# Depends on `bundle` because the smoke now runs the plugin as installed --
+# the shim in a plugin-only copy, execing the committed bundle. Without this
+# dependency an edit to src/ would be smoke-tested against a stale bundle
+# and pass, which is the exact failure mode this smoke exists to catch.
+smoke: bundle
 	GPT_IMAGEGEN_LIVE=1 node --test test/live.test.js

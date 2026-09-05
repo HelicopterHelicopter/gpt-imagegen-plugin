@@ -24,29 +24,14 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const repoRoot = path.resolve(__dirname, '..');
-const pluginSrc = path.join(repoRoot, 'plugins', 'gpt-imagegen');
-
-/**
- * Copies the plugin directory -- and only the plugin directory -- into a
- * fresh temp dir, mimicking what `/plugin install` puts on disk.
- * Returns the path to the installed plugin root.
- */
-function fakeInstall(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gpt-imagegen-install-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const dest = path.join(dir, 'gpt-imagegen');
-  fs.cpSync(pluginSrc, dest, { recursive: true });
-  return dest;
-}
+const { pluginSrc, fakeInstall, shimIn } = require('./install-helper');
 
 test('the shim runs from an installed plugin with no repo checkout around it', (t) => {
   const installed = fakeInstall(t);
-  const shim = path.join(installed, 'scripts', 'gpt-imagegen');
+  const shim = shimIn(installed);
 
   // An unknown command is the cheapest thing that proves the bundle both
   // resolved and executed: src/cli.js emits a REFUSED envelope for it

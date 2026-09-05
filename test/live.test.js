@@ -1,10 +1,17 @@
 'use strict';
 
-// Opt-in end-to-end smoke test. Drives the real CLI entry point against a
-// real, signed-in ChatGPT session and therefore costs a real ChatGPT turn
-// against the user's account. It must NEVER run as part of the ordinary
-// suite -- only when a human deliberately sets GPT_IMAGEGEN_LIVE=1. Port of
-// tests/live/live_test.go.
+// Opt-in end-to-end smoke test. Drives a real, signed-in ChatGPT session
+// and therefore costs a real ChatGPT turn against the user's account. It
+// must NEVER run as part of the ordinary suite -- only when a human
+// deliberately sets GPT_IMAGEGEN_LIVE=1. Port of tests/live/live_test.go.
+//
+// It runs the plugin AS INSTALLED: the launcher shim inside a plugin-only
+// copy, which execs the committed bundle. It used to run
+// bin/gpt-imagegen.js instead, which loads src/ from this checkout and
+// resolves puppeteer-core out of node_modules/ -- so the artifact users
+// actually receive had never generated an image even once. Only `doctor`
+// had ever exercised the bundle, and doctor never touches the composer,
+// the network capture or the image write.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -12,14 +19,15 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { fakeInstall, shimIn } = require('./install-helper');
 
 const LIVE = process.env.GPT_IMAGEGEN_LIVE === '1';
 const skipReason = LIVE ? false : 'set GPT_IMAGEGEN_LIVE=1 to run the live smoke';
 
-test('generate produces a real image file on disk', { skip: skipReason }, () => {
-  const bin = path.join(__dirname, '..', 'bin', 'gpt-imagegen.js');
-  if (!fs.existsSync(bin)) {
-    assert.fail(`entry point not found at ${bin}`);
+test('generate produces a real image file on disk', { skip: skipReason }, (t) => {
+  const shim = shimIn(fakeInstall(t));
+  if (!fs.existsSync(shim)) {
+    assert.fail(`launcher shim not found at ${shim}`);
   }
 
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gpt-imagegen-live-'));
@@ -28,8 +36,8 @@ test('generate produces a real image file on disk', { skip: skipReason }, () => 
   let stdout;
   try {
     stdout = execFileSync(
-      process.execPath,
-      [bin, 'generate', '--prompt', 'a plain solid teal square, no text', '--out', out],
+      shim,
+      ['generate', '--prompt', 'a plain solid teal square, no text', '--out', out],
       { encoding: 'utf8' }
     );
   } catch (err) {
