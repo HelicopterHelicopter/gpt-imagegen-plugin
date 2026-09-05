@@ -363,11 +363,92 @@ async function saveImages(page, rec, state, ids, out, stderr) {
 }
 
 /**
+ * Decides what a finished generate() run should emit, once waitDone has
+ * settled (successfully or not) and saveImages has been given a chance to
+ * write whatever it could to disk. Pure: no I/O, no browser, no clock --
+ * deliberately extracted so this exact decision can be pinned by a table of
+ * unit tests, the same way recordFinished (capture.js) and safeRun are.
+ *
+ * This is the decision the Go final review found BROKEN in an earlier
+ * draft: `generate()` returned on waitDone's error before ever checking
+ * whether images had actually arrived, so a run that HAD produced images
+ * saved zero files while the ChatGPT turn was already spent -- one of two
+ * whole-branch blockers. The corrected rule, encoded here and NOWHERE else
+ * in generate(), so a future refactor cannot silently reintroduce it in one
+ * branch while leaving it fixed in another:
+ *
+ *   - images present, not timed out  -> success, archiving ALLOWED
+ *   - images present, timed out      -> success, archiving NEVER allowed --
+ *                                        the page never signalled
+ *                                        completion, so the conversation
+ *                                        stays unarchived as the recovery
+ *                                        path for whatever did not arrive,
+ *                                        even if every requested image did
+ *                                        in fact land
+ *   - no images, timed out           -> TIMEOUT, carries conversationUrl
+ *   - no images, not timed out       -> NO_IMAGE_RETURNED, carries
+ *                                        conversationUrl
+ *
+ * `noImageMessage` lets generate()'s two "zero images" situations (no
+ * distinct image id ever appeared vs. ids appeared but every byte fetch
+ * failed) supply their own human-readable text without duplicating this
+ * branching to do it.
+ *
+ * @returns {{kind:'success', archived:boolean, warn:string|null} |
+ *           {kind:'failure', code:string, conversationUrl:string, message:string}}
+ */
+function salvageOutcome({ timedOut, images, count, conversationUrl, waitError, noImageMessage }) {
+  const saved = images.length;
+
+  if (saved === 0) {
+    if (timedOut) {
+      return {
+        kind: 'failure',
+        code: envelope.CODES.TIMEOUT,
+        conversationUrl,
+        message: waitError ? waitError.message : 'timed out',
+      };
+    }
+    return {
+      kind: 'failure',
+      code: envelope.CODES.NO_IMAGE_RETURNED,
+      conversationUrl,
+      message: noImageMessage || 'no generated image in the response',
+    };
+  }
+
+  if (timedOut) {
+    // Salvaged run: real images on disk, so ok:true with exactly the images
+    // that exist. Deliberately NEVER archived here -- not even when
+    // saved === count -- because the completion signal itself never fired;
+    // the conversation is the recovery path for whatever this run could not
+    // confirm arrived.
+    return {
+      kind: 'success',
+      archived: false,
+      warn:
+        `run timed out (${waitError ? waitError.message : 'unknown'}) and saved ${saved} of ${count} requested ` +
+        `images; the conversation is left unarchived at ${conversationUrl} for recovery`,
+    };
+  }
+
+  // A partial save is still ok:true (the schema is unchanged; the caller
+  // can compare images.length to count), but silently shipping fewer
+  // images than requested deserves a visible warning.
+  return {
+    kind: 'success',
+    archived: true,
+    warn: saved < count ? `saved ${saved} of ${count} requested images` : null,
+  };
+}
+
+/**
  * The shared path for both `generate` and `edit`. Port of run.go's
  * `generate`. Acquires the profile lock before touching the browser and
  * releases it (finally) no matter how the run ends; never retries a
  * generation; archives only after every image is on disk, and never on a
- * failure or salvaged-timeout path.
+ * failure or salvaged-timeout path (see salvageOutcome, the single place
+ * that decision is made).
  */
 async function generate(prompt, out, count, refs, stdout, stderr) {
   const start = Date.now();
@@ -488,76 +569,53 @@ async function generate(prompt, out, count, refs, stdout, stderr) {
       }
 
       const ids = pageState.distinctImageIds(st2);
-      if (ids.length === 0) {
-        if (timedOut) {
+      let images = [];
+      if (ids.length > 0) {
+        try {
+          images = await saveImages(page, rec, st2, ids, out, stderr);
+        } catch (err) {
           return emit(
             stdout,
-            envelope.withConversation(envelope.failure(envelope.CODES.TIMEOUT, waitErr.message), convUrl)
+            envelope.withConversation(envelope.failure(envelope.CODES.REFUSED, err.message), convUrl)
           );
         }
+      }
+
+      // The ONE place the timeout-salvage decision is made -- see
+      // salvageOutcome's doc comment for exactly why that matters.
+      const outcome = salvageOutcome({
+        timedOut,
+        images,
+        count,
+        conversationUrl: convUrl,
+        waitError: waitErr,
+        noImageMessage:
+          ids.length === 0 ? 'no generated image in the response' : 'image bytes could not be retrieved',
+      });
+
+      if (outcome.kind === 'failure') {
         return emit(
           stdout,
-          envelope.withConversation(
-            envelope.failure(envelope.CODES.NO_IMAGE_RETURNED, 'no generated image in the response'),
-            convUrl
-          )
+          envelope.withConversation(envelope.failure(outcome.code, outcome.message), outcome.conversationUrl)
         );
       }
 
-      let images;
-      try {
-        images = await saveImages(page, rec, st2, ids, out, stderr);
-      } catch (err) {
-        return emit(stdout, envelope.withConversation(envelope.failure(envelope.CODES.REFUSED, err.message), convUrl));
-      }
+      if (outcome.warn) stderr.write(`warning: ${outcome.warn}\n`);
 
-      if (images.length === 0) {
-        if (timedOut) {
-          return emit(
-            stdout,
-            envelope.withConversation(envelope.failure(envelope.CODES.TIMEOUT, waitErr.message), convUrl)
-          );
+      // Archive only when the outcome allows it (never on a salvaged
+      // timeout) and only now that every file is on disk. A failure to
+      // archive is cosmetic and must never fail the run.
+      let archived = false;
+      if (outcome.archived) {
+        try {
+          await compose.archive(page, sel);
+          archived = true;
+        } catch (err) {
+          stderr.write(`archive skipped: ${err.message}\n`);
         }
-        return emit(
-          stdout,
-          envelope.withConversation(
-            envelope.failure(envelope.CODES.NO_IMAGE_RETURNED, 'image bytes could not be retrieved'),
-            convUrl
-          )
-        );
       }
 
       const elapsedS = (Date.now() - start) / 1000;
-
-      if (timedOut) {
-        // Salvaged run: real images on disk, so ok:true with exactly the
-        // images that exist. Deliberately NOT archived -- the conversation
-        // is the recovery path for the images that never arrived.
-        stderr.write(
-          `warning: run timed out (${waitErr.message}) and saved ${images.length} of ${count} requested images; ` +
-            `the conversation is left unarchived at ${convUrl} for recovery\n`
-        );
-        return emit(stdout, envelope.success(images, convUrl, false, elapsedS));
-      }
-
-      // A partial save is still ok:true (the schema is unchanged; the
-      // caller can compare images.length to count), but silently shipping
-      // fewer images than requested deserves a visible warning.
-      if (images.length < count) {
-        stderr.write(`warning: saved ${images.length} of ${count} requested images\n`);
-      }
-
-      // Archive only now that every file is on disk. A failed run is never
-      // archived, because its conversation URL is the recovery path. A
-      // failure to archive is cosmetic and must not fail the run.
-      let archived = false;
-      try {
-        await compose.archive(page, sel);
-        archived = true;
-      } catch (err) {
-        stderr.write(`archive skipped: ${err.message}\n`);
-      }
-
       return emit(stdout, envelope.success(images, convUrl, archived, elapsedS));
     } finally {
       await internal.closeSession(handle);
@@ -625,6 +683,10 @@ async function safeRun(fn, stdout, stderr) {
 module.exports = {
   run,
   safeRun,
+  // Pure decision function, exported for direct unit testing (no browser,
+  // no stubs needed) -- see its doc comment for why this is pinned in
+  // isolation rather than only exercised indirectly through generate().
+  salvageOutcome,
   // Test-only seam -- see the `internal` doc comment above. Production code
   // never reads or writes this from outside this module.
   _internal: internal,
