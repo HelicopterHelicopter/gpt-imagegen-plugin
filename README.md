@@ -5,15 +5,17 @@ real (visible, on first sign-in) Chrome instance. Images are billed against
 the user's ChatGPT plan, not an API key.
 
 This repo is a Node CLI (`src/`, bundled into the single committed file
-`dist/index.cjs`) and a Claude Code plugin (`plugins/gpt-imagegen`) that
-wraps that bundle with a launcher shim, an auto-triggering skill, and slash
-commands.
+`plugins/gpt-imagegen/dist/index.cjs`) and a Claude Code plugin
+(`plugins/gpt-imagegen`) that wraps that bundle with a launcher shim, an
+auto-triggering skill, and slash commands. The bundle lives *inside* the
+plugin directory because `/plugin install` copies only that directory —
+anything at the repo root never reaches an installed user.
 
 ## Requirements
 
 - **Node.js 20 or later.** Nothing else needs installing — the plugin ships
-  its own dependencies bundled into `dist/index.cjs`, so there is no
-  `npm install` step for an end user.
+  its own dependencies bundled into `plugins/gpt-imagegen/dist/index.cjs`,
+  so there is no `npm install` step for an end user.
 - **Google Chrome**, signed in to ChatGPT (the plugin drives that session
   directly; it never uses an API key). Chromium, Brave and Edge also work in
   practice, since `chromePath()` searches for those too, but Chrome is what
@@ -30,7 +32,7 @@ Add this repo as a marketplace and install the plugin:
 
 That's it — there is no build step and no binary to download. The plugin's
 launcher shim (`plugins/gpt-imagegen/scripts/gpt-imagegen`) execs `node` on
-the committed `dist/index.cjs` bundle directly. If `node` isn't on `PATH`,
+the committed bundle directly. If `node` isn't on `PATH`,
 the shim prints one line of JSON with `error.code: "NODE_MISSING"` instead
 of failing silently.
 
@@ -167,13 +169,21 @@ absent, and the run still reports the miss.
 
 ```bash
 npm test           # node --test test/*.test.js
-make bundle        # rebuild dist/index.cjs from src/ (commit the result)
-make bundle-check  # rebuild and fail if dist/ doesn't match what's committed
+make bundle        # rebuild the committed bundle from src/ (commit the result)
+make bundle-check  # rebuild and fail if the bundle doesn't match what's committed
 make smoke         # opt-in live smoke test; costs a real ChatGPT turn (~40s)
 ```
 
-`dist/index.cjs` is committed to git and is what the plugin actually runs
-(via `plugins/gpt-imagegen/scripts/gpt-imagegen`). Whenever you change
-anything under `src/`, run `make bundle` and commit the updated
-`dist/index.cjs` in the same change — CI's `make bundle-check` fails the
-build otherwise.
+`plugins/gpt-imagegen/dist/index.cjs` is committed to git and is what the
+plugin actually runs (via `plugins/gpt-imagegen/scripts/gpt-imagegen`).
+Whenever you change anything under `src/`, run `make bundle` and commit the
+updated bundle in the same change — CI's `make bundle-check` fails the build
+otherwise.
+
+Its path is load-bearing, not cosmetic: `test/install.test.js` copies
+`plugins/gpt-imagegen/` alone into a temp directory and runs the shim there,
+reproducing what `/plugin install` puts on disk. Every other test runs from a
+full checkout, where the repo root is always present — which is exactly how an
+earlier layout (bundle at the repo root, shim reaching it with `../../../`)
+passed CI while being unrunnable for anyone who actually installed the
+plugin.

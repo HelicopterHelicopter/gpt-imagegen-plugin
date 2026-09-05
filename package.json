@@ -5,7 +5,7 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "bundle": "node esbuild.config.mjs",
-    "bundle:check": "node esbuild.config.mjs && git diff --exit-code dist/"
+    "bundle:check": "node esbuild.config.mjs && git diff --exit-code plugins/gpt-imagegen/dist/"
   },
   "repository": {
     "type": "git",

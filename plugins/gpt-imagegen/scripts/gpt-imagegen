@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Launches the bundled CLI. The plugin ships a single self-contained
-# artifact at dist/index.cjs (built by `make bundle` from src/cli.js and
+# artifact at dist/index.cjs, INSIDE this plugin directory (built by
+# `make bundle` from src/cli.js and
 # committed to git, so a clone needs no `npm install` and there is no
 # separate binary to locate or download). This shim's only job is to find
 # that file relative to its own location and hand off to `node`.
+#
+# The path below must stay within the plugin root. `/plugin install`
+# copies ONLY the directory marketplace.json points at, so a bundle path
+# that climbs above it resolves fine in a repo checkout and breaks for
+# every installed user. test/install.test.js pins this.
 #
 # There used to be a three-way binary search here ($GPT_IMAGEGEN_BIN, a
 # local Go build, a downloaded release binary) because a compiled
@@ -14,7 +20,7 @@
 # `node` itself not being installed, handled below.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-bundle="$here/../../../dist/index.cjs"
+bundle="$here/../dist/index.cjs"
 
 if ! command -v node >/dev/null 2>&1; then
   echo '{"ok":false,"error":{"code":"NODE_MISSING","message":"node was not found on PATH. Install Node.js 20 or later (see https://nodejs.org) and try again."}}'

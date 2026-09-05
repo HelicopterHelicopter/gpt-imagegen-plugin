@@ -1,7 +1,13 @@
 // Bundles the CLI entry point (src/cli.js, via bin/gpt-imagegen.js) into a
-// single self-contained CommonJS file at dist/index.cjs. That file is
-// committed to git -- see the header comment in dist/index.cjs -- so a
-// clone of this repo needs no `npm install` to run the plugin.
+// single self-contained CommonJS file at plugins/gpt-imagegen/dist/index.cjs.
+// That file is committed to git, so a clone of this repo needs no
+// `npm install` to run the plugin.
+//
+// outfile lives INSIDE plugins/gpt-imagegen/ on purpose. `/plugin install`
+// copies only the plugin directory named by marketplace.json; a bundle
+// emitted to the repo root is never shipped, and the installed plugin dies
+// on `Cannot find module`. test/install.test.js proves the installed
+// layout works without a checkout around it.
 //
 // platform: 'node', format: 'cjs': the file runs under plain `node`, no ESM
 //   loader gymnastics.
@@ -27,7 +33,7 @@ import * as esbuild from 'esbuild';
 
 await esbuild.build({
   entryPoints: ['bin/gpt-imagegen.js'],
-  outfile: 'dist/index.cjs',
+  outfile: 'plugins/gpt-imagegen/dist/index.cjs',
   bundle: true,
   platform: 'node',
   format: 'cjs',
