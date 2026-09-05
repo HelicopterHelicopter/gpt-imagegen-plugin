@@ -68,7 +68,17 @@ const skipReason = chromeBin ? false : 'no Chrome-family browser available for t
  * process.
  */
 async function withFixturePage(fixture, fn) {
-  const browser = await puppeteer.launch({ executablePath: chromeBin, headless: true });
+  // CI runners cannot use Chrome's sandbox (no user namespaces, often root), so
+  // Chrome crashes on launch there. go-rod added --no-sandbox automatically when
+  // running as root; puppeteer does not, which is why this only surfaced after the
+  // port. Scoped to this throwaway fixture browser ONLY -- the production launch
+  // path in src/session.js must never disable the sandbox on a user's real Chrome.
+  const ciArgs = process.env.CI ? ['--no-sandbox', '--disable-dev-shm-usage'] : [];
+  const browser = await puppeteer.launch({
+    executablePath: chromeBin,
+    headless: true,
+    args: ciArgs,
+  });
   try {
     const page = await browser.newPage();
     await page.goto(fixtureUrl(fixture), { waitUntil: 'load' });
