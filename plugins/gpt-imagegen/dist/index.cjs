@@ -123,6 +123,7 @@ var require_envelope = __commonJS({
       if (result.conversationUrl) out.conversation_url = result.conversationUrl;
       if (result.archived) out.archived = result.archived;
       if (result.elapsedS) out.elapsed_s = result.elapsedS;
+      if (result.selectors) out.selectors = result.selectors;
       if (result.error) out.error = errorToJSON(result.error);
       return out;
     }
@@ -255,7 +256,10 @@ var require_selectors2 = __commonJS({
       const body = JSON.stringify(delta, null, 2) + "\n";
       fs8.writeFileSync(filePath, body, { mode: 384 });
     }
-    module2.exports = { load, query, patch, save, userPath };
+    function shipped() {
+      return cloneSet(embedded);
+    }
+    module2.exports = { load, query, patch, save, userPath, shipped };
   }
 });
 
@@ -59761,6 +59765,11 @@ var require_cli = __commonJS({
         await safeCleanup("closeSession", () => internal.closeSession(handle), stderr);
       }
     }
+    async function cmdSelectors(stdout) {
+      const result = envelope.success(null, "", false, 0);
+      result.selectors = selectors.shipped();
+      return emit(stdout, result);
+    }
     async function cmdDoctor(stdout, stderr) {
       try {
         sessionMod.chromePath();
@@ -60100,7 +60109,7 @@ var require_cli = __commonJS({
       if (args.length === 0) {
         return emit(
           stdout,
-          envelope.failure(envelope.CODES.REFUSED, "usage: gpt-imagegen <setup|doctor|generate|edit|probe>")
+          envelope.failure(envelope.CODES.REFUSED, "usage: gpt-imagegen <setup|doctor|generate|edit|probe|selectors>")
         );
       }
       const [cmd, ...rest] = args;
@@ -60115,6 +60124,8 @@ var require_cli = __commonJS({
           return cmdEdit(rest, stdout, stderr);
         case "probe":
           return cmdProbe(rest, stdout, stderr);
+        case "selectors":
+          return cmdSelectors(stdout);
         default:
           return emit(stdout, envelope.failure(envelope.CODES.REFUSED, `unknown command ${cmd}`));
       }

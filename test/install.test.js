@@ -92,3 +92,42 @@ test('the shim never resolves the bundle above the plugin root', () => {
       `${pluginSrc}; only files under the plugin root are installed`
   );
 });
+
+test('no shipped file points outside the plugin root', () => {
+  // The bundle-path bug in its general form: a shipped file naming a path
+  // that only exists in a repo checkout. `${CLAUDE_PLUGIN_ROOT}/../../src/...`
+  // reads fine here and is a dangling reference for every installed user,
+  // because `/plugin install` copies nothing above the plugin root.
+  //
+  // This caught a second instance after the shim: SKILL.md sent the
+  // self-heal step to `${CLAUDE_PLUGIN_ROOT}/../../src/selectors.json` for
+  // the shipped candidate lists. Missing that file does not fail loudly --
+  // it pushes the agent into writing the single-candidate patch SKILL.md
+  // itself labels WRONG, silently deleting every shipped fallback.
+  const offenders = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (e.name === 'dist') continue; // the built bundle, not authored text
+        walk(full);
+        continue;
+      }
+      const text = fs.readFileSync(full, 'utf8');
+      for (const line of text.split('\n')) {
+        // A shipped file may say "../" inside prose; what must never appear
+        // is a PATH rooted at the plugin that then climbs out of it.
+        if (/\$\{?CLAUDE_PLUGIN_ROOT\}?\/(\.\.\/)/.test(line)) {
+          offenders.push(`${path.relative(pluginSrc, full)}: ${line.trim()}`);
+        }
+      }
+    }
+  };
+  walk(pluginSrc);
+  assert.deepStrictEqual(
+    offenders,
+    [],
+    'these shipped files reference a path above the plugin root, which is ' +
+      'not installed:\n' + offenders.join('\n')
+  );
+});

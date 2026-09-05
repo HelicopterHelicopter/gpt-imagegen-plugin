@@ -125,6 +125,11 @@ function toJSON(result) {
   if (result.conversationUrl) out.conversation_url = result.conversationUrl;
   if (result.archived) out.archived = result.archived;
   if (result.elapsedS) out.elapsed_s = result.elapsedS;
+  // Only the `selectors` command sets this; it is omitted everywhere else.
+  // It has to be named here because this function is an allowlist -- fields
+  // not mentioned are dropped, deliberately, so nothing internal leaks onto
+  // the one line of JSON the skill parses.
+  if (result.selectors) out.selectors = result.selectors;
   if (result.error) out.error = errorToJSON(result.error);
   return out;
 }

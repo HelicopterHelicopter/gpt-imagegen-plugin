@@ -141,10 +141,17 @@ On `SELECTOR_MISS`:
      next small UI change that a fallback would have absorbed becomes a hard
      failure. Always repeat the shipped candidates behind your new one.
 
-   The shipped candidates for a key are in the plugin's own data file at
-   `${CLAUDE_PLUGIN_ROOT}/../../src/selectors.json`. Read the key from there
-   (and from the user file, if it already has that key) and carry every
-   candidate through.
+   Ask the plugin for the shipped candidates — do not guess them:
+
+   ```bash
+   ${CLAUDE_PLUGIN_ROOT}/scripts/gpt-imagegen selectors
+   ```
+
+   It prints one line of JSON whose `selectors` field holds every shipped
+   key and its full candidate list. It launches no browser and touches no
+   profile, so it is safe to run mid-repair. Read the key from there (and
+   from `~/.gpt-imagegen/selectors.json`, if it already has that key) and
+   carry every candidate through.
 
    Concrete example. `composer_input` ships as:
 

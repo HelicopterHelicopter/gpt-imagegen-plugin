@@ -189,6 +189,25 @@ async function cmdSetup(stdout, stderr) {
   }
 }
 
+/**
+ * Prints the selector candidate lists this plugin ships.
+ *
+ * Exists so the self-heal step in SKILL.md can read the shipped fallbacks
+ * without reaching for a file outside the plugin directory (nothing above
+ * the plugin root is installed). Launches no browser and touches no
+ * profile, so it is safe to run at any point in a repair.
+ *
+ * The shipped set rides on the normal success envelope in an extra
+ * `selectors` field rather than replacing it: stdout stays exactly one line
+ * of JSON with the usual ok/error keys, so an existing parser reading this
+ * line does not have to special-case the command.
+ */
+async function cmdSelectors(stdout) {
+  const result = envelope.success(null, '', false, 0);
+  result.selectors = selectors.shipped();
+  return emit(stdout, result);
+}
+
 async function cmdDoctor(stdout, stderr) {
   try {
     sessionMod.chromePath();
@@ -657,7 +676,7 @@ async function run(argv, stdout, stderr) {
   if (args.length === 0) {
     return emit(
       stdout,
-      envelope.failure(envelope.CODES.REFUSED, 'usage: gpt-imagegen <setup|doctor|generate|edit|probe>')
+      envelope.failure(envelope.CODES.REFUSED, 'usage: gpt-imagegen <setup|doctor|generate|edit|probe|selectors>')
     );
   }
   const [cmd, ...rest] = args;
@@ -672,6 +691,8 @@ async function run(argv, stdout, stderr) {
       return cmdEdit(rest, stdout, stderr);
     case 'probe':
       return cmdProbe(rest, stdout, stderr);
+    case 'selectors':
+      return cmdSelectors(stdout);
     default:
       return emit(stdout, envelope.failure(envelope.CODES.REFUSED, `unknown command ${cmd}`));
   }

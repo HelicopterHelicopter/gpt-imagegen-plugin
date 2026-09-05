@@ -67,6 +67,7 @@ gpt-imagegen doctor
 gpt-imagegen generate --prompt "<text>" --out <path> [--count N] [--ref FILE ...]
 gpt-imagegen edit --image <path> --prompt "<text>" --out <path>
 gpt-imagegen probe --stage <name>
+gpt-imagegen selectors
 ```
 
 stdout is always exactly one line of JSON (see `src/envelope.js`); all
@@ -81,6 +82,12 @@ branch on `error.code`, never on message text.
   `--ref`) and saves one or more resulting images. `--count` requests more
   than one image from the same conversation, so style and palette match.
 - `edit` is `generate` with a single existing image attached as a reference.
+- `selectors` prints the selector candidate lists the plugin ships, as
+  JSON on the usual one-line envelope (in a `selectors` field). Self-heal
+  needs them: a key written to `~/.gpt-imagegen/selectors.json` replaces
+  that key's list wholesale, so a repair has to repeat the shipped
+  candidates behind its new one or it deletes every fallback. It launches no
+  browser and touches no profile, so it is safe to run mid-repair.
 - `probe` dumps interactive/image elements from the live ChatGPT page as
   JSON, for diagnosing a `SELECTOR_MISS` without needing a repro. Each
   candidate carries `testid` and `css` (the only two fields the selector

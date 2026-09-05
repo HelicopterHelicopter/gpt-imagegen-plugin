@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { load, query, patch, save, userPath } = require('../src/selectors');
+const { load, query, patch, save, userPath, shipped } = require('../src/selectors');
 
 // productionKeys is every key the production code actually resolves or
 // queries. It is exhaustive in BOTH directions on purpose: a key the code
@@ -193,4 +193,26 @@ test('selectors.json is required via a static path, not a runtime file read (bun
     /readFileSync\([^)]*selectors\.json/,
     'the embedded defaults must not be loaded via a runtime file read -- that defeats esbuild inlining'
   );
+});
+
+test('shipped() returns the embedded defaults', () => {
+  const set = shipped();
+  assert.ok(Object.keys(set).length > 0, 'expected at least one shipped key');
+  assert.ok(
+    set.composer_input.length > 1,
+    'composer_input must ship more than one candidate -- the layered fallback ' +
+      'is the whole reason self-heal has to carry shipped candidates through'
+  );
+});
+
+test('shipped() hands out an independent copy each call', () => {
+  // Same hazard cloneSet() exists for: `embedded` is one cached object, so
+  // returning a reference would let a caller mutate the defaults for every
+  // later load in the process.
+  const first = shipped();
+  first.composer_input.length = 0;
+  first.injected_key = [{ css: '.nope' }];
+  const second = shipped();
+  assert.ok(second.composer_input.length > 1, 'defaults were mutated by a caller');
+  assert.strictEqual(second.injected_key, undefined);
 });

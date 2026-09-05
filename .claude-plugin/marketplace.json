@@ -3,13 +3,13 @@
   "owner": { "name": "jheelr" },
   "metadata": {
     "description": "Generate images through a signed-in ChatGPT browser session.",
-    "version": "0.2.1"
+    "version": "0.2.2"
   },
   "plugins": [
     {
       "name": "gpt-imagegen",
       "description": "Generate, edit and set images via ChatGPT in a real browser.",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "author": { "name": "jheelr" },
       "source": "./plugins/gpt-imagegen"
     }

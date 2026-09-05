@@ -163,4 +163,23 @@ function save(set, filePath) {
   fs.writeFileSync(filePath, body, { mode: 0o600 });
 }
 
-module.exports = { load, query, patch, save, userPath };
+/**
+ * The candidate lists this plugin ships, independent of any user overrides.
+ *
+ * Self-heal needs these: a key in the user file REPLACES that key's list
+ * wholesale, so a patch must repeat the shipped candidates behind its new
+ * one or it deletes every fallback. SKILL.md used to send the agent to
+ * `src/selectors.json` for them, which is not shipped -- `/plugin install`
+ * copies only the plugin directory. Serving them from here instead means
+ * the answer comes from the same inlined JSON the resolver itself uses, so
+ * there is no second copy to drift out of sync.
+ *
+ * Returns a fresh clone for the same reason load() does: `embedded` is one
+ * cached object, and handing out a reference would let a caller mutate the
+ * defaults for every later load in the process.
+ */
+function shipped() {
+  return cloneSet(embedded);
+}
+
+module.exports = { load, query, patch, save, userPath, shipped };

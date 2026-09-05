@@ -554,3 +554,47 @@ test('salvageOutcome: images:[] with timedOut:false is NO_IMAGE_RETURNED, never 
   assert.equal(outcome.code, 'NO_IMAGE_RETURNED');
   assert.notEqual(outcome.code, 'TIMEOUT');
 });
+
+// --- selectors ----------------------------------------------------------
+
+test('selectors: one JSON line carrying the shipped candidate lists', async () => {
+  const stdout = makeStream();
+  const stderr = makeStream();
+  const code = await run(['selectors'], stdout, stderr);
+  const parsed = assertSingleJsonLine(stdout.toString());
+  assert.equal(parsed.ok, true);
+  assert.equal(code, 0);
+
+  // The field has to survive envelope.toJSON(), which is an allowlist: a
+  // field it does not name is dropped, so the command would print a bare
+  // {"ok":true} and the self-heal step would have nothing to read.
+  assert.ok(parsed.selectors, 'selectors field was dropped from the JSON line');
+  assert.ok(
+    parsed.selectors.composer_input.length > 1,
+    'shipped fallbacks must reach the caller intact'
+  );
+});
+
+test('selectors: launches no browser', async () => {
+  // Self-heal runs this mid-repair, when the page is already in a bad
+  // state; it must not open Chrome or touch the user's profile.
+  const stdout = makeStream();
+  const stderr = makeStream();
+  const original = cli._internal.openSession;
+  cli._internal.openSession = () => {
+    throw new Error('selectors must not open a session');
+  };
+  try {
+    await run(['selectors'], stdout, stderr);
+  } finally {
+    cli._internal.openSession = original;
+  }
+  assert.equal(assertSingleJsonLine(stdout.toString()).ok, true);
+});
+
+test('every other command is still rejected the same way', async () => {
+  const stdout = makeStream();
+  const stderr = makeStream();
+  await run(['selector'], stdout, stderr); // near-miss, not the real command
+  assert.equal(assertSingleJsonLine(stdout.toString()).error.code, 'REFUSED');
+});
