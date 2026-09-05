@@ -1,5 +1,7 @@
 'use strict';
 
+const { launchTestBrowser } = require('./browser-helper.js');
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -144,7 +146,7 @@ test(
   'collect() still reports a hidden input[type=file] as an actionable candidate',
   { skip: skipReason },
   async () => {
-    const browser = await puppeteer.launch({ executablePath: chromeBin, headless: true });
+    const browser = await launchTestBrowser(chromeBin);
     try {
       const page = await browser.newPage();
       // display:none, exactly like a real hidden file input: width and

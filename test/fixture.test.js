@@ -1,5 +1,7 @@
 'use strict';
 
+const { launchTestBrowser } = require('./browser-helper.js');
+
 // Fixture regression tests: the ONLY test in this project that can warn a
 // maintainer that ChatGPT changed its DOM (or that our selectors drifted
 // from it). Everything else in this repo is unit-level and never touches a
@@ -68,17 +70,7 @@ const skipReason = chromeBin ? false : 'no Chrome-family browser available for t
  * process.
  */
 async function withFixturePage(fixture, fn) {
-  // CI runners cannot use Chrome's sandbox (no user namespaces, often root), so
-  // Chrome crashes on launch there. go-rod added --no-sandbox automatically when
-  // running as root; puppeteer does not, which is why this only surfaced after the
-  // port. Scoped to this throwaway fixture browser ONLY -- the production launch
-  // path in src/session.js must never disable the sandbox on a user's real Chrome.
-  const ciArgs = process.env.CI ? ['--no-sandbox', '--disable-dev-shm-usage'] : [];
-  const browser = await puppeteer.launch({
-    executablePath: chromeBin,
-    headless: true,
-    args: ciArgs,
-  });
+  const browser = await launchTestBrowser(chromeBin);
   try {
     const page = await browser.newPage();
     await page.goto(fixtureUrl(fixture), { waitUntil: 'load' });
