@@ -91,14 +91,29 @@ function writeDump(dir, stage, url, cands) {
  * better -- a missing candidate is visible and safe, a wrong one is
  * neither. An id is emitted only when it is a plain CSS identifier, since
  * an id needing escaping would produce an invalid selector.
+ *
+ * The zero-rect filter below exists to keep those landmine button/div
+ * candidates out, and it is otherwise correct. But it has one structural
+ * blind spot: ChatGPT's upload control is a hidden `input[type=file]` --
+ * that is exactly why compose.send drives it with uploadFile() rather than
+ * a click -- so it always has a zero-size box and the filter would drop it
+ * every time. Dropping it is worse than useless for that one key: a
+ * SELECTOR_MISS on upload_input then produces a dump with no candidate at
+ * all, and the self-heal loop this dump exists to feed correctly gives up
+ * rather than guessing. `input[type=file]` is therefore exempted from the
+ * rect check specifically -- and ONLY that -- everything else (buttons,
+ * divs, textareas, images) still has to pass it.
  */
 function collectCandidatesInBrowser() {
   const out = [];
   const sel = 'button,[role=button],textarea,input,div[contenteditable=true],img,[data-testid]';
   const idOK = /^[A-Za-z_-][A-Za-z0-9_-]*$/;
   document.querySelectorAll(sel).forEach((e) => {
-    const r = e.getBoundingClientRect();
-    if (r.width === 0 && r.height === 0) return;
+    const isFileInput = e.tagName === 'INPUT' && (e.getAttribute('type') || '').toLowerCase() === 'file';
+    if (!isFileInput) {
+      const r = e.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) return;
+    }
     const testid = e.getAttribute('data-testid') || '';
     let css = '';
     if (e.id && idOK.test(e.id)) {

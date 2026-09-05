@@ -73,6 +73,29 @@ function emit(stream, result) {
 }
 
 /**
+ * Runs a cleanup step (releasing the profile lock, closing the browser
+ * session) and never lets it throw. A cleanup failure must never change
+ * what stdout already said -- emit() may already have written the run's
+ * one line by the time a `finally` block reaches this -- and it must never
+ * mask whatever result that line reported. The detail goes to stderr only;
+ * everything else is swallowed.
+ *
+ * This is layer one of the "exactly one stdout line" guarantee (see
+ * safeRun for layer two): it stops the known path -- releaseLock/
+ * closeSession rethrowing a non-ENOENT fs error out of generate()'s outer
+ * `finally` blocks -- at its source, rather than relying on safeRun to
+ * paper over a second write after the fact.
+ */
+async function safeCleanup(label, fn, stderr) {
+  try {
+    await fn();
+  } catch (err) {
+    const detail = err && err.stack ? err.stack : String(err);
+    stderr.write(`gpt-imagegen: cleanup failed (${label}): ${detail}\n`);
+  }
+}
+
+/**
  * Saves a PNG of the page next to the probe dump. Only worth taking on a
  * selector miss, where the question is "what does the page actually look
  * like now" -- so any failure here degrades to an empty path rather than
@@ -162,7 +185,7 @@ async function cmdSetup(stdout, stderr) {
     }
     return emit(stdout, envelope.failure(envelope.CODES.NOT_LOGGED_IN, 'timed out waiting for sign-in'));
   } finally {
-    await internal.closeSession(handle);
+    await safeCleanup('closeSession', () => internal.closeSession(handle), stderr);
   }
 }
 
@@ -192,7 +215,7 @@ async function cmdDoctor(stdout, stderr) {
     stderr.write(`chrome ok, profile ok, auth ok; keys=${st.summary}\n`);
     return emit(stdout, envelope.success(null, '', false, 0));
   } finally {
-    await internal.closeSession(handle);
+    await safeCleanup('closeSession', () => internal.closeSession(handle), stderr);
   }
 }
 
@@ -302,7 +325,7 @@ async function cmdProbe(args, stdout, stderr) {
     r.error.screenshot = await writeScreenshot(page, 'probe', artifactDir());
     return emit(stdout, r);
   } finally {
-    await internal.closeSession(handle);
+    await safeCleanup('closeSession', () => internal.closeSession(handle), stderr);
   }
 }
 
@@ -618,10 +641,10 @@ async function generate(prompt, out, count, refs, stdout, stderr) {
       const elapsedS = (Date.now() - start) / 1000;
       return emit(stdout, envelope.success(images, convUrl, archived, elapsedS));
     } finally {
-      await internal.closeSession(handle);
+      await safeCleanup('closeSession', () => internal.closeSession(handle), stderr);
     }
   } finally {
-    lockMod.releaseLock(lock);
+    await safeCleanup('releaseLock', () => lockMod.releaseLock(lock), stderr);
   }
 }
 
@@ -667,16 +690,37 @@ async function run(argv, stdout, stderr) {
  * The thrown value's detail is logged to stderr only; stdout always carries
  * a fixed, generic message, because the thrown value could be arbitrary
  * (a raw string, an object, anything) and is not safe to echo onto stdout.
+ *
+ * Layer two of the "exactly one stdout line" guarantee (see safeCleanup for
+ * layer one): `fn` may write its one line via emit() and THEN throw (e.g. a
+ * cleanup step that forgot to route through safeCleanup, today or in some
+ * future change). To keep the contract structural rather than dependent on
+ * every caller remembering, this wraps `stdout` for the duration of `fn()`
+ * and tracks whether anything was written to it. If something was, this
+ * catch block suppresses its own line -- writing a second one would be
+ * exactly the bug this function exists to prevent -- but still logs the
+ * panic detail to stderr and still returns a non-zero exit code.
  */
 async function safeRun(fn, stdout, stderr) {
+  let wroteToStdout = false;
+  const originalWrite = stdout.write;
+  stdout.write = function patchedWrite(...args) {
+    wroteToStdout = true;
+    return originalWrite.apply(stdout, args);
+  };
   try {
     return await fn();
   } catch (err) {
     const detail = err && err.stack ? err.stack : String(err);
     stderr.write(`gpt-imagegen: internal error: ${detail}\n`);
+    if (wroteToStdout) {
+      return 1;
+    }
     const r = envelope.failure(envelope.CODES.REFUSED, 'internal error; see stderr for details');
     envelope.write(r, stdout);
     return envelope.exitCode(r);
+  } finally {
+    stdout.write = originalWrite;
   }
 }
 

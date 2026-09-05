@@ -8,6 +8,9 @@ const path = require('node:path');
 
 const cli = require('../src/cli');
 const { run, safeRun, salvageOutcome } = cli;
+const lockMod = require('../src/lock');
+const capture = require('../src/capture');
+const compose = require('../src/compose');
 
 // Port of run_test.go / main_test.go, adapted to Node. No Chrome, no login:
 // every test here either short-circuits before a browser would be opened,
@@ -191,6 +194,210 @@ test('safeRun: a non-throwing runner passes its result straight through', async 
   assert.equal(code, 0);
   assert.equal(stdout.toString(), '');
   assert.equal(stderr.toString(), '');
+});
+
+// --- safeRun: idempotent-stdout guard (FIX 1, layer two) -----------------
+//
+// `fn` may legitimately write its one JSON line and THEN throw -- e.g. a
+// cleanup step that raises after emit() already fired. safeRun must not
+// compound that into a second stdout line: whatever `fn` already wrote
+// stands, the panic detail goes to stderr only, and the exit code is still
+// non-zero. This is defence in depth alongside the fix at the cleanup call
+// sites themselves (safeCleanup in src/cli.js) -- it is what makes "exactly
+// one line" hold even if some future cleanup forgets to route through that
+// helper.
+
+test('safeRun: a runner that writes a line and THEN throws still yields exactly one stdout line, detail on stderr, non-zero exit', async () => {
+  const stdout = makeStream();
+  const stderr = makeStream();
+  const SENTINEL = 'GPT_IMAGEGEN_TEST_SENTINEL_POSTWRITE_71ad0c';
+
+  const code = await safeRun(
+    () => {
+      stdout.write('{"ok":true,"images":[],"conversation_url":"","elapsed_s":0}\n');
+      throw new Error(SENTINEL);
+    },
+    stdout,
+    stderr
+  );
+
+  const outText = stdout.toString();
+  assertSingleJsonLine(outText);
+  assert.ok(outText.includes('"ok":true'), 'the line fn already wrote must survive untouched');
+  assert.notEqual(code, 0, 'the throw after the write must still be signalled via a non-zero exit code');
+  assert.ok(stderr.toString().includes(SENTINEL), 'the thrown value must still be visible on stderr');
+});
+
+test('safeRun: a runner that throws BEFORE writing anything still yields exactly one stdout line (no regression)', async () => {
+  const stdout = makeStream();
+  const stderr = makeStream();
+  const SENTINEL = 'GPT_IMAGEGEN_TEST_SENTINEL_PREWRITE_c92f4e';
+
+  const code = await safeRun(
+    () => {
+      throw new Error(SENTINEL);
+    },
+    stdout,
+    stderr
+  );
+
+  const outText = stdout.toString();
+  const parsed = assertSingleJsonLine(outText);
+  assert.equal(parsed.ok, false);
+  assert.notEqual(code, 0);
+  assert.ok(stderr.toString().includes(SENTINEL));
+});
+
+// --- FIX 1: a throwing cleanup must never produce a second stdout line ---
+//
+// generate()'s outer `finally` blocks call closeSession then releaseLock
+// unconditionally. Before the fix, releaseLock rethrowing any non-ENOENT fs
+// error escaped generate() -> run() -> safeRun(), which then wrote a SECOND
+// json line -- even when emit() had already reported ok:true for images
+// genuinely on disk. These tests drive the scenario through run() directly
+// (no safeRun wrapper), so a fix that only patches safeRun's own write,
+// without stopping the throw at its source (safeCleanup), still fails them:
+// an uncaught rejection out of run() itself is exactly the bug.
+
+/**
+ * Points the profile lock at a scratch dir so acquireLock/releaseLock never
+ * touch the user's real ~/.gpt-imagegen/profile lock.
+ *
+ * profile.lockPath() is a SIBLING of the profile dir (dirname(profileDir)
+ * + "lock"), not something inside it -- so the override must nest the
+ * profile dir one level under its own fresh mkdtemp directory. Pointing
+ * GPT_IMAGEGEN_PROFILE_DIR directly at a mkdtemp'd dir would make
+ * dirname() collapse to the shared os.tmpdir(), so every test using this
+ * helper would compute the SAME lockPath ("<tmpdir>/lock") and contend
+ * with each other's locks.
+ */
+function useScratchProfileDir(t) {
+  const prev = process.env.GPT_IMAGEGEN_PROFILE_DIR;
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'gpt-imagegen-fix1-profile-'));
+  process.env.GPT_IMAGEGEN_PROFILE_DIR = path.join(scratch, 'profile');
+  t.after(() => {
+    if (prev === undefined) delete process.env.GPT_IMAGEGEN_PROFILE_DIR;
+    else process.env.GPT_IMAGEGEN_PROFILE_DIR = prev;
+  });
+}
+
+function makeReleaseLockThrow(t) {
+  const original = lockMod.releaseLock;
+  lockMod.releaseLock = () => {
+    throw new Error('EIO: some non-ENOENT filesystem error (simulated)');
+  };
+  t.after(() => {
+    lockMod.releaseLock = original;
+  });
+}
+
+test('FIX1 failure case: releaseLock throwing after openSession fails still yields exactly one ok:false line', async (t) => {
+  useScratchProfileDir(t);
+  makeReleaseLockThrow(t);
+
+  const originalOpen = cli._internal.openSession;
+  cli._internal.openSession = async () => {
+    throw new Error('no chrome');
+  };
+  t.after(() => {
+    cli._internal.openSession = originalOpen;
+  });
+
+  const stdout = makeStream();
+  const stderr = makeStream();
+
+  // Calling run() directly (no safeRun) is deliberate: before the fix,
+  // releaseLock's throw escapes generate() -> run() as an unhandled
+  // rejection from THIS await -- the test fails right here, not on a
+  // later assertion, which is the clearest possible signal the bug is
+  // real and not merely a stdout-formatting nitpick.
+  const code = await run(
+    ['generate', '--prompt', 'x', '--out', path.join(os.tmpdir(), 'fix1-out.png')],
+    stdout,
+    stderr
+  );
+
+  const parsed = assertSingleJsonLine(stdout.toString());
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error.code, 'CHROME_MISSING');
+  assert.notEqual(code, 0);
+  assert.ok(stderr.toString().includes('cleanup failed'), 'the swallowed cleanup error must still reach stderr');
+});
+
+test('FIX1 success case: releaseLock (and closeSession) throwing after a successful generate leaves the ok:true line unchanged', async (t) => {
+  useScratchProfileDir(t);
+  makeReleaseLockThrow(t);
+
+  const originalOpen = cli._internal.openSession;
+  const originalAuth = cli._internal.auth;
+  const originalClose = cli._internal.closeSession;
+  const originalCreateRecorder = capture.createRecorder;
+  const originalNewChat = compose.newChat;
+  const originalSend = compose.send;
+  const originalWaitDone = compose.waitDone;
+  const originalArchive = compose.archive;
+
+  const fakePage = { url: () => 'https://chatgpt.com/c/fix1-success-test' };
+  const fileId = 'file_fix1success0000000000000000';
+
+  cli._internal.openSession = async () => ({ browser: { newPage: async () => fakePage } });
+  cli._internal.auth = async () => ({ loggedIn: true, summary: 'k' });
+  // closeSession ALSO throws here: both cleanup steps in generate()'s
+  // nested finally blocks must be independently swallowed.
+  cli._internal.closeSession = async () => {
+    throw new Error('EIO: close failed (simulated)');
+  };
+  capture.createRecorder = () => ({
+    start() {},
+    files() {
+      return { [fileId]: Buffer.from('not really png bytes, just needs length > 0') };
+    },
+    url() {
+      return '';
+    },
+    mime() {
+      return 'image/png';
+    },
+    ids() {
+      return [fileId];
+    },
+  });
+  compose.newChat = async () => {};
+  compose.send = async () => {};
+  compose.waitDone = async () => ({
+    loading: false,
+    streaming: false,
+    imageURLs: [`https://chatgpt.com/backend-api/estuary/content?id=${fileId}`],
+    alts: ['Generated image: Fix1 Success Test'],
+  });
+  compose.archive = async () => {};
+
+  t.after(() => {
+    cli._internal.openSession = originalOpen;
+    cli._internal.auth = originalAuth;
+    cli._internal.closeSession = originalClose;
+    capture.createRecorder = originalCreateRecorder;
+    compose.newChat = originalNewChat;
+    compose.send = originalSend;
+    compose.waitDone = originalWaitDone;
+    compose.archive = originalArchive;
+  });
+
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gpt-imagegen-fix1-out-'));
+  const stdout = makeStream();
+  const stderr = makeStream();
+
+  // As above: run() directly, so a regression surfaces as an unhandled
+  // rejection right here rather than a downstream assertion.
+  const code = await run(['generate', '--prompt', 'a cat wearing a hat', '--out', outDir], stdout, stderr);
+
+  const outText = stdout.toString();
+  const parsed = assertSingleJsonLine(outText);
+  assert.equal(parsed.ok, true, `expected ok:true to survive the throwing cleanups, got ${outText}`);
+  assert.equal(parsed.images.length, 1);
+  assert.equal(code, 0);
+  assert.ok(stderr.toString().includes('cleanup failed (closeSession)'), 'closeSession failure must reach stderr');
+  assert.ok(stderr.toString().includes('cleanup failed (releaseLock)'), 'releaseLock failure must reach stderr');
 });
 
 // --- salvageOutcome: the timeout-salvage decision, pinned directly -------

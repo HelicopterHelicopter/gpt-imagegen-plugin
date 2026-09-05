@@ -5,8 +5,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const puppeteer = require('puppeteer-core');
 
-const { actionable, sanitizeStage, writeDump, DUMP_NOTE } = require('../src/probe');
+const { actionable, sanitizeStage, writeDump, collect, DUMP_NOTE } = require('../src/probe');
+const { chromePath } = require('../src/session');
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'probe-test-'));
@@ -115,3 +117,54 @@ test('sanitizeStage never returns a value containing a path separator or ".."', 
     assert.ok(!got.includes('..'), `sanitizeStage(${JSON.stringify(stage)}) => ${JSON.stringify(got)} still has ".."`);
   }
 });
+
+// --- FIX 3: a hidden input[type=file] must survive the zero-rect filter --
+//
+// ChatGPT's upload control is a hidden input[type=file] (compose.send
+// drives it via uploadFile(), never a click, precisely because it is never
+// visible). getBoundingClientRect() on a hidden element is {0,0}, so the
+// rect filter that otherwise correctly keeps landmine button/div
+// candidates out would also drop the ONE element the --ref/edit path's
+// upload_input key needs. A SELECTOR_MISS on that key would then produce a
+// probe dump with no candidate at all, leaving the documented self-heal
+// loop nothing to repair it with -- structurally unrepairable. Runs
+// against a real headless browser (skips cleanly, same as fixture.test.js,
+// when no Chrome-family browser is available) because getBoundingClientRect
+// is a real layout computation jsdom does not reliably reproduce.
+
+let chromeBin;
+try {
+  chromeBin = chromePath();
+} catch {
+  chromeBin = null;
+}
+const skipReason = chromeBin ? false : 'no Chrome-family browser available for this test';
+
+test(
+  'collect() still reports a hidden input[type=file] as an actionable candidate',
+  { skip: skipReason },
+  async () => {
+    const browser = await puppeteer.launch({ executablePath: chromeBin, headless: true });
+    try {
+      const page = await browser.newPage();
+      // display:none, exactly like a real hidden file input: width and
+      // height both compute to 0, which is what the rect filter looks at.
+      await page.setContent(
+        '<!doctype html><html><body>' +
+          '<input type="file" data-testid="upload-photos-input" style="display:none">' +
+          '</body></html>'
+      );
+
+      const cands = await collect(page);
+      const hit = cands.find((c) => c.testid === 'upload-photos-input');
+
+      assert.ok(hit, `expected a candidate for the hidden file input, got: ${JSON.stringify(cands)}`);
+      assert.ok(
+        actionable(hit),
+        `candidate for the hidden file input must be actionable (testid or css): ${JSON.stringify(hit)}`
+      );
+    } finally {
+      await browser.close();
+    }
+  }
+);

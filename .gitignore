@@ -1,6 +1,4 @@
 out/
 *.png
-/gpt-imagegen
-plugins/gpt-imagegen/bin/
 .superpowers/
 node_modules/

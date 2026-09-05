@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "description": "Generate and edit images by driving a signed-in ChatGPT browser session with a real (visible, on first sign-in) Chrome instance. Images are billed against the user's ChatGPT plan, not an API key.",
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test \"test/**/*.test.js\"",
     "bundle": "node esbuild.config.mjs",
     "bundle:check": "node esbuild.config.mjs && git diff --exit-code dist/"
   },

@@ -59586,8 +59586,11 @@ var require_probe = __commonJS({
       const sel = "button,[role=button],textarea,input,div[contenteditable=true],img,[data-testid]";
       const idOK = /^[A-Za-z_-][A-Za-z0-9_-]*$/;
       document.querySelectorAll(sel).forEach((e) => {
-        const r = e.getBoundingClientRect();
-        if (r.width === 0 && r.height === 0) return;
+        const isFileInput = e.tagName === "INPUT" && (e.getAttribute("type") || "").toLowerCase() === "file";
+        if (!isFileInput) {
+          const r = e.getBoundingClientRect();
+          if (r.width === 0 && r.height === 0) return;
+        }
         const testid = e.getAttribute("data-testid") || "";
         let css = "";
         if (e.id && idOK.test(e.id)) {
@@ -59671,6 +59674,15 @@ var require_cli = __commonJS({
       envelope.write(result, stream);
       return envelope.exitCode(result);
     }
+    async function safeCleanup(label, fn, stderr) {
+      try {
+        await fn();
+      } catch (err) {
+        const detail = err && err.stack ? err.stack : String(err);
+        stderr.write(`gpt-imagegen: cleanup failed (${label}): ${detail}
+`);
+      }
+    }
     async function writeScreenshot(page, stage, dir) {
       let buf;
       try {
@@ -59746,7 +59758,7 @@ var require_cli = __commonJS({
         }
         return emit(stdout, envelope.failure(envelope.CODES.NOT_LOGGED_IN, "timed out waiting for sign-in"));
       } finally {
-        await internal.closeSession(handle);
+        await safeCleanup("closeSession", () => internal.closeSession(handle), stderr);
       }
     }
     async function cmdDoctor(stdout, stderr) {
@@ -59775,7 +59787,7 @@ var require_cli = __commonJS({
 `);
         return emit(stdout, envelope.success(null, "", false, 0));
       } finally {
-        await internal.closeSession(handle);
+        await safeCleanup("closeSession", () => internal.closeSession(handle), stderr);
       }
     }
     function parseCount(raw) {
@@ -59874,7 +59886,7 @@ var require_cli = __commonJS({
         r.error.screenshot = await writeScreenshot(page, "probe", artifactDir());
         return emit(stdout, r);
       } finally {
-        await internal.closeSession(handle);
+        await safeCleanup("closeSession", () => internal.closeSession(handle), stderr);
       }
     }
     async function saveImages(page, rec, state, ids, out, stderr) {
@@ -60077,10 +60089,10 @@ var require_cli = __commonJS({
           const elapsedS = (Date.now() - start) / 1e3;
           return emit(stdout, envelope.success(images, convUrl, archived, elapsedS));
         } finally {
-          await internal.closeSession(handle);
+          await safeCleanup("closeSession", () => internal.closeSession(handle), stderr);
         }
       } finally {
-        lockMod.releaseLock(lock);
+        await safeCleanup("releaseLock", () => lockMod.releaseLock(lock), stderr);
       }
     }
     async function run2(argv, stdout, stderr) {
@@ -60108,15 +60120,26 @@ var require_cli = __commonJS({
       }
     }
     async function safeRun2(fn, stdout, stderr) {
+      let wroteToStdout = false;
+      const originalWrite = stdout.write;
+      stdout.write = function patchedWrite(...args) {
+        wroteToStdout = true;
+        return originalWrite.apply(stdout, args);
+      };
       try {
         return await fn();
       } catch (err) {
         const detail = err && err.stack ? err.stack : String(err);
         stderr.write(`gpt-imagegen: internal error: ${detail}
 `);
+        if (wroteToStdout) {
+          return 1;
+        }
         const r = envelope.failure(envelope.CODES.REFUSED, "internal error; see stderr for details");
         envelope.write(r, stdout);
         return envelope.exitCode(r);
+      } finally {
+        stdout.write = originalWrite;
       }
     }
     module2.exports = {
