@@ -1,5 +1,9 @@
 out/
 *.png
+# ...except committed repo assets. The rule above exists to keep generated
+# and test-output images out of the tree; the README's own artwork has to be
+# in it, or the image renders as a broken link on GitHub.
+!assets/*.png
 .superpowers/
 node_modules/
 .DS_Store

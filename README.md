@@ -1,3 +1,5 @@
+![gpt-imagegen — generate images by driving a signed-in ChatGPT browser session](assets/banner.png)
+
 # gpt-imagegen
 
 Generate and edit images by driving a signed-in ChatGPT browser session with a
